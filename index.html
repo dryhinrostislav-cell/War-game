@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
-<title>Боевой вылет ONLINE 2</title>
+<title>Боевой вылет ONLINE</title>
 <style>
 html,body{margin:0;padding:0;overflow:hidden;background:#000;height:100%;touch-action:none;user-select:none;-webkit-user-select:none;font-family:monospace}
 canvas{display:block}
@@ -130,22 +130,13 @@ canvas{display:block}
 <script type="module">
 import * as THREE from 'three';
 
-const net = {
-  role: 'offline',
-  peer: null,
-  conn: null,
-  myId: null,
-  remotePlayers: {},
-  bombCounter: 0,
-  seenBids: new Set(),
-};
+const net = { role: 'offline', peer: null, conn: null, myId: null, remotePlayers: {}, bombCounter: 0, seenBids: new Set() };
 
 function createRemotePlayerMesh(name, role) {
   const g = new THREE.Group();
   const color = role === 'civilian' ? 0x4488ff : 0xff4444;
   const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.4, 1.0, 4, 8), new THREE.MeshLambertMaterial({color}));
-  body.position.y = 1;
-  g.add(body);
+  body.position.y = 1; g.add(body);
   const canvas = document.createElement('canvas');
   canvas.width = 256; canvas.height = 64;
   const ctx = canvas.getContext('2d');
@@ -153,8 +144,7 @@ function createRemotePlayerMesh(name, role) {
   ctx.fillStyle = '#0f0'; ctx.font = 'bold 28px monospace'; ctx.textAlign = 'center';
   ctx.fillText(name, 128, 42);
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({map: new THREE.CanvasTexture(canvas), depthTest: false}));
-  sprite.scale.set(4, 1, 1); sprite.position.y = 3;
-  g.add(sprite);
+  sprite.scale.set(4, 1, 1); sprite.position.y = 3; g.add(sprite);
   return g;
 }
 function updateRemotePlayer(id, data, scene) {
@@ -166,9 +156,6 @@ function updateRemotePlayer(id, data, scene) {
   const rp = net.remotePlayers[id];
   rp.targetPos.set(data.x, data.y - 1.7, data.z);
   rp.targetYaw = data.yaw || 0;
-}
-function removeRemotePlayer(id, scene) {
-  if (net.remotePlayers[id]) { scene.remove(net.remotePlayers[id].mesh); delete net.remotePlayers[id]; }
 }
 
 document.getElementById('hostBtn').addEventListener('click', () => {
@@ -254,7 +241,7 @@ setInterval(() => {
   if (net.conn && net.conn.open) {
     let data;
     if (role === 'civilian') data = {t: 'state', name: net.role === 'host' ? 'Хост' : 'Клиент', role: 'civilian', x: groundPlayer.pos.x, y: groundPlayer.pos.y, z: groundPlayer.pos.z, yaw: groundPlayer.yaw};
-    else if (plane) data = {t: 'state', name: net.role === 'host' ? 'Хост' : 'Клиент', role: 'pilot', x: plane.pos.x, y: plane.pos.y, z: plane.pos.z, yaw: (typeof player !== 'undefined' && player.yaw !== undefined) ? player.yaw : 0};
+    else if (plane) data = {t: 'state', name: net.role === 'host' ? 'Хост' : 'Клиент', role: 'pilot', x: plane.pos.x, y: plane.pos.y, z: plane.pos.z, yaw: 0};
     else return;
     try { net.conn.send(data); } catch(e) {}
   }
@@ -267,11 +254,9 @@ function updateRemoteAI(data) {
   aiPlane.mesh.position.copy(aiPlane.pos);
   aiPlane.mesh.rotation.y = aiPlane.yaw;
 }
-
 function updateRemoteBuilding(data) {
   const b = buildings.find(b => Math.abs(b.x - data.x) < 0.5 && Math.abs(b.z - data.z) < 0.5);
-  if (!b) return;
-  if (b.destroyed) return;
+  if (!b || b.destroyed) return;
   b.hp = data.hp;
   if (b.hp <= 0) destroyBuilding(b, new THREE.Vector3(data.x, 0, data.z));
   else if (b.hp < b.maxHp * 0.5 && b.stage < 2) damageBuilding2(b, 0.5);
@@ -292,7 +277,7 @@ const renderer = new THREE.WebGLRenderer({antialias:false, powerPreference:'high
 renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
 renderer.setSize(W, H);
 document.body.appendChild(renderer.domElement);
-addEventListener('resize', () => location.reload());
+addEventListener('resize', () => { if (started) location.reload(); });
 const photoRT = new THREE.WebGLRenderTarget(320, 200, {format: THREE.RGBAFormat, type: THREE.UnsignedByteType});
 const skyCanvas = document.createElement('canvas');
 skyCanvas.width = 8; skyCanvas.height = 256;
@@ -483,7 +468,6 @@ function createAA(x, z) {
   aaGuns.push({group: g, turret, x, z, alive: true, lastShot: 0, range: 350, fireRate: 0.8, lockProgress: 0});
 }
 for (let i = 0; i < 8; i++) createAA((Math.random()-.5)*1400, (Math.random()-.5)*1400);
-const persistentCraters = [];
 function addCrater(pos, scale, type) {
   scale = scale || 1;
   const crater = new THREE.Mesh(new THREE.CircleGeometry(6 * scale, 24), new THREE.MeshBasicMaterial({color: type === 'inc' ? 0x1a0800 : 0x1a1208, transparent: true, opacity: 0.95}));
@@ -695,27 +679,6 @@ function takeAftermathPhoto(pos) {
   const v = variants[Math.floor(Math.random()*variants.length)];
   return captureScene(new THREE.Vector3(pos.x + v.ox, v.oy, pos.z + v.oz), new THREE.Vector3(pos.x, v.tY, pos.z));
 }
-function takeFlybyVideoFrames() {
-  const target = plane || aiPlane; if (!target) return null;
-  let nb = null, minD = Infinity;
-  for (const b of buildings) { if (b.destroyed) continue; const d = Math.hypot(b.x - target.pos.x, b.z - target.pos.z); if (d > 15 && d < minD) { minD = d; nb = b; } }
-  const cx = nb ? nb.x : target.pos.x + 20, cz = nb ? nb.z : target.pos.z + 20, cy = nb ? nb.h + 2 : 12;
-  const frames = [];
-  for (let i = 0; i < 6; i++) {
-    const t = i / 5;
-    const fd = captureScene(new THREE.Vector3(cx, cy, cz), target.pos.clone().add(new THREE.Vector3(Math.sin(t*Math.PI*2)*15, 0, -t*40)));
-    if (fd) frames.push(fd);
-  }
-  return frames;
-}
-function takeImpactVideoFrames(pos) {
-  let nb = null, minD = Infinity;
-  for (const b of buildings) { if (b.destroyed) continue; const d = Math.hypot(b.x - pos.x, b.z - pos.z); if (d > 25 && d < minD) { minD = d; nb = b; } }
-  const cx = nb ? nb.x : pos.x + 30, cz = nb ? nb.z : pos.z + 30, cy = nb ? nb.h + 2 : 12;
-  const frames = [];
-  for (let i = 0; i < 6; i++) { const fd = captureScene(new THREE.Vector3(cx, cy, cz), new THREE.Vector3(pos.x, 3, pos.z)); if (fd) frames.push(fd); }
-  return frames;
-}
 const channels = {
   mil: {name: 'ОПЕР. КАНАЛ «ВОСТОК»', sub: 'закрытый канал · 1247 подписчиков', icon: '⚔', posts: []},
   civ: {name: 'ГОРОД · ЧП', sub: 'открытый канал · 8421 подписчиков', icon: '🏚', posts: []},
@@ -771,14 +734,14 @@ function renderFeed() {
     });
   }, 50);
 }
-const MIL_NAMES = ['Владимир', 'Сергей', 'Андрей', 'Дмитрий', 'Николай', 'Максим', 'Иван', 'Олег', 'Пётр', 'Роман', 'Виктор', 'Борис', 'Алексей'];
-const CIV_NAMES = ['Ольга', 'Мария', 'Аноним', 'Сосед', 'Иван П.', 'Волонтёр', 'Бабушка Зина', 'Местный', 'Сергей', 'Анна', 'Пётр', 'Екатерина', 'Наталья', 'Олег'];
-const CIV_EXPLOSION_TEXTS = ['Господи, что это было?', 'Весь дом задрожал!', 'Мы в подвале.', 'Свет вырубился.', 'Осколки по улице.', 'Дети в панике.', 'Пожарные не едут.', 'Окна повылетали.', 'Дым столбом.', 'Машину пробило.', 'Уши заложило.', 'Стена треснула.', 'Страшно выходить.'];
-const CIV_TAKEOFF_TEXTS = ['Опять гул над городом.', 'Опять взлетают.', 'Прячемся.', 'Не спится от гула.', 'Собака воет.', 'Дети испугались.'];
-const CIV_BOMB_FALLING_TEXTS = ['Слышно свист в воздухе!', 'Бомба летит! В укрытие!', 'Свист!', 'Прижались к полу!', 'Ложись!', 'Сейчас рванёт!'];
-const MIL_BOMB_DROP_TEXTS = ['КАБ в воздухе!', 'Бомба сброшена!', 'Пуск!', 'Сброс выполнен!'];
-const MIL_COMMENTS = ['Принято.', 'Цель поражена.', 'ПВО промахнулось.', 'Запрашиваю эвакуацию.', 'Держим оборону.'];
-const NEWS_TEXTS = ['Экстренные службы работают.', 'Информация уточняется.', 'Сохраняйте спокойствие.'];
+const MIL_NAMES = ['Владимир', 'Сергей', 'Андрей', 'Дмитрий', 'Николай', 'Максим', 'Иван', 'Олег', 'Пётр', 'Роман', 'Виктор', 'Борис'];
+const CIV_NAMES = ['Ольга', 'Мария', 'Аноним', 'Сосед', 'Иван П.', 'Волонтёр', 'Бабушка Зина', 'Местный', 'Сергей', 'Анна', 'Пётр', 'Екатерина'];
+const CIV_EXPLOSION_TEXTS = ['Господи, что это было?', 'Весь дом задрожал!', 'Мы в подвале.', 'Свет вырубился.', 'Осколки по улице.', 'Дети в панике.', 'Пожарные не едут.', 'Окна повылетали.', 'Дым столбом.', 'Уши заложило.', 'Стена треснула.'];
+const CIV_TAKEOFF_TEXTS = ['Опять гул над городом.', 'Опять взлетают.', 'Прячемся.', 'Собака воет.', 'Дети испугались.'];
+const CIV_BOMB_FALLING_TEXTS = ['Слышно свист в воздухе!', 'Бомба летит!', 'Свист!', 'Ложись!', 'Сейчас рванёт!'];
+const MIL_BOMB_DROP_TEXTS = ['КАБ в воздухе!', 'Бомба сброшена!', 'Пуск!'];
+const MIL_COMMENTS = ['Принято.', 'Цель поражена.', 'ПВО промахнулось.', 'Держим оборону.'];
+const NEWS_TEXTS = ['Экстренные службы работают.', 'Информация уточняется.'];
 function randomComments(pool, names, minN, maxN) {
   const pc = pool.slice();
   for (let i = pc.length - 1; i > 0; i--) { const j = Math.floor(Math.random()*(i+1)); [pc[i], pc[j]] = [pc[j], pc[i]]; }
@@ -787,8 +750,7 @@ function randomComments(pool, names, minN, maxN) {
   for (let i = 0; i < n; i++) {
     let name, tries = 0;
     do { name = names[Math.floor(Math.random()*names.length)]; tries++; } while (un.has(name) && tries < 12);
-    un.add(name);
-    out.push({author: name, msg: pc[i]});
+    un.add(name); out.push({author: name, msg: pc[i]});
   }
   return out;
 }
@@ -821,8 +783,6 @@ function postBombDrop(bombType) {
   addChannelPost('civ', 'житель', `Слышим гул и свист в небе...`, null, null, null, randomComments(CIV_TAKEOFF_TEXTS, CIV_NAMES, 2, 4));
 }
 function postBombFalling() { addChannelPost('civ', 'житель', `Свист! Бомба падает!`, null, null, null, randomComments(CIV_BOMB_FALLING_TEXTS, CIV_NAMES, 3, 5)); }
-function postFlybyVideo(frames) { if (!frames || !frames.length) return; addChannelPost('civ', 'житель', 'CCTV: пролёт!', null, 'CCTV: пролёт', null, randomComments(CIV_TAKEOFF_TEXTS, CIV_NAMES, 2, 4), frames); }
-function postImpactVideo(frames) { if (!frames || !frames.length) return; addChannelPost('civ', 'житель', 'CCTV: прилёт!', null, 'CCTV: прилёт', null, randomComments(CIV_EXPLOSION_TEXTS, CIV_NAMES, 3, 5), frames); }
 function postExplosion(pos, bombType, damageInfo) {
   const loc = `MGRS 37T ${(pos.x/100).toFixed(1)} ${(pos.z/100).toFixed(1)}`;
   setTimeout(() => {
@@ -892,7 +852,7 @@ function spawnAIPlane() {
   const aiYaw = Math.atan2(dirToCity.x, dirToCity.z);
   aiMesh.rotation.y = aiYaw;
   scene.add(aiMesh);
-  aiPlane = {mesh: aiMesh, pos: aiStart.clone(), quat: new THREE.Quaternion().setFromEuler(new THREE.Euler(0, aiYaw, 0)), yaw: aiYaw, speed: 0, altitude: 3, state: 'takeoff', stateTimer: 0, attackTimer: 0, bombsLeft: 8, nextBombTimer: 0.5, evadeTimer: 0, isEvading: false, flybyTimer: 0, flybyTarget: null};
+  aiPlane = {mesh: aiMesh, pos: aiStart.clone(), quat: new THREE.Quaternion().setFromEuler(new THREE.Euler(0, aiYaw, 0)), yaw: aiYaw, speed: 0, altitude: 3, state: 'takeoff', stateTimer: 0, attackTimer: 0, bombsLeft: 8, nextBombTimer: 0.5, evadeTimer: 0, isEvading: false};
   postTakeoff('Су-34');
 }
 function updateAIPlane(dt) {
@@ -902,23 +862,17 @@ function updateAIPlane(dt) {
   if (ai.state === 'takeoff') {
     ai.speed += 40 * dt;
     ai.altitude = Math.max(3, ai.altitude + (ai.speed > 80 ? 40 * dt : 0));
-    if (ai.altitude > 450) { ai.state = 'attack'; ai.attackTimer = 0; ai.bombsLeft = 8; ai.nextBombTimer = 0.5; ai.isEvading = false; ai.flybyTimer = 0; }
+    if (ai.altitude > 450) { ai.state = 'attack'; ai.attackTimer = 0; ai.bombsLeft = 8; ai.nextBombTimer = 0.5; ai.isEvading = false; }
   } else if (ai.state === 'attack') {
     ai.attackTimer += dt;
     ai.speed = Math.min(220, ai.speed + 15 * dt);
     ai.altitude = 450 + Math.sin(ai.stateTimer * 0.5) * 30;
     if (ai.bombsLeft <= 0 || ai.attackTimer > 300) { ai.state = 'return'; ai.stateTimer = 0; postAllClear(); return; }
-    ai.flybyTimer = (ai.flybyTimer || 0) - dt;
-    if (ai.flybyTimer <= 0 && !ai.isEvading) {
-      ai.flybyTimer = 12 + Math.random() * 8;
-      ai.flybyTarget = new THREE.Vector3((Math.random()-0.5)*80, 0, (Math.random()-0.5)*80);
-      if (Math.random() < 0.6) { const frames = takeFlybyVideoFrames(); if (frames && frames.length >= 2) postFlybyVideo(frames); }
-    }
     if (ai.isEvading) { ai.evadeTimer -= dt; ai.yaw += Math.sin(ai.stateTimer * 6) * 3 * dt; if (ai.evadeTimer <= 0) ai.isEvading = false; }
-    else if (ai.flybyTarget) {
-      const dx = ai.flybyTarget.x - ai.pos.x, dz = ai.flybyTarget.z - ai.pos.z, d = Math.hypot(dx, dz);
-      if (d < 40) ai.flybyTarget = null;
-      else { const ty = Math.atan2(dx, dz); let diff = ty - ai.yaw; while (diff > Math.PI) diff -= Math.PI*2; while (diff < -Math.PI) diff += Math.PI*2; ai.yaw += Math.sign(diff) * Math.min(Math.abs(diff), 0.5 * dt); }
+    else {
+      const ty = Math.atan2(-ai.pos.x, -ai.pos.z);
+      let diff = ty - ai.yaw; while (diff > Math.PI) diff -= Math.PI*2; while (diff < -Math.PI) diff += Math.PI*2;
+      ai.yaw += Math.sign(diff) * Math.min(Math.abs(diff), 0.5 * dt);
     }
     ai.nextBombTimer -= dt;
     if (ai.nextBombTimer <= 0 && !ai.isEvading && ai.bombsLeft > 0) {
@@ -944,13 +898,11 @@ function updateAIPlane(dt) {
           net.seenBids.add(bid);
           const finalPos = bpos.clone().addScaledVector(fwd, -k*25);
           const vel = dir.clone().multiplyScalar(hs);
-          const nb = {mesh: bmesh, type: 'kab', bid, pos: finalPos, vel: vel, exploded: false, life: 0, impactPos: null, isAI: true, fallNotified: false, aiStraight: true, owner: 'me'};
+          const nb = {mesh: bmesh, type: 'kab', bid, pos: finalPos, vel: vel, exploded: false, life: 0, impactPos: null, isAI: true, whistle: null, owner: 'me'};
           bombs.push(nb);
           ai.bombsLeft--;
           if (net.conn && net.conn.open) { try { net.conn.send({t: 'drop', bid, btype: 'kab', x: finalPos.x, y: finalPos.y, z: finalPos.z, vx: vel.x, vy: vel.y, vz: vel.z}); } catch(e) {} }
-          setTimeout(() => { if (nb.impactPos) { const f = takeImpactVideoFrames(nb.impactPos); if (f && f.length >= 2) postImpactVideo(f); } }, ft*1000 + 500);
         }
-        addChannelPost('news', 'РЕДАКЦИЯ', `⚠️ Сброс ${dc} КАБов с высоты ~${Math.round(ai.altitude)} м.`, null, null, null, []);
         postBombDrop('kab');
         if (ai.bombsLeft <= 0) { ai.state = 'return'; ai.stateTimer = 0; postAllClear(); }
         else { ai.isEvading = true; ai.evadeTimer = 6 + Math.random()*4; ai.nextBombTimer = 12 + Math.random()*8; }
@@ -978,35 +930,8 @@ function updateAIPlane(dt) {
   ai.mesh.position.copy(ai.pos);
   const ce = new THREE.Euler().setFromQuaternion(ai.quat, 'YXZ');
   ce.y = ai.yaw; ce.z = Math.max(-0.5, Math.min(0.5, ce.z));
-  ai.quat.setFromEuler(ce);
-  ai.mesh.quaternion.copy(ai.quat);
-  updateWhoosh();
+  ai.quat.setFromEuler(ce); ai.mesh.quaternion.copy(ai.quat);
   if (net.conn && net.conn.open) { try { net.conn.send({t: 'ai', x: ai.pos.x, y: ai.pos.y, z: ai.pos.z, yaw: ai.yaw}); } catch(e) {} }
-  if (ai.state !== 'ground' && Math.random() < 0.7) {
-    const smoke = new THREE.Mesh(new THREE.SphereGeometry(0.9 + Math.random()*0.7, 6, 6), new THREE.MeshBasicMaterial({color: 0xd8d8d8, transparent: true, opacity: 0.7}));
-    smoke.position.copy(ai.pos).addScaledVector(fwdV, -3); smoke.position.y -= 1.5;
-    scene.add(smoke);
-    contrails.push({mesh: smoke, life: 0, maxLife: 5, vel: new THREE.Vector3((Math.random()-0.5)*0.5, 0.6, (Math.random()-0.5)*0.5), isSpark: false});
-  }
-}
-function updateWhoosh() {
-  if (!audioCtx) return;
-  let nd = Infinity;
-  if (aiPlane && aiPlane.state !== 'ground') nd = Math.min(nd, camera.position.distanceTo(aiPlane.pos));
-  if (plane && role === 'pilot' && mode === 'ground') nd = Math.min(nd, camera.position.distanceTo(plane.pos));
-  if (!whooshOsc) {
-    whooshOsc = audioCtx.createOscillator();
-    whooshOsc.type = 'sine'; whooshOsc.frequency.value = 60;
-    whooshFilter = audioCtx.createBiquadFilter(); whooshFilter.type = 'lowpass'; whooshFilter.frequency.value = 200;
-    whooshGain = audioCtx.createGain(); whooshGain.gain.value = 0;
-    whooshOsc.connect(whooshFilter); whooshFilter.connect(whooshGain); whooshGain.connect(audioCtx.destination);
-    whooshOsc.start();
-  }
-  if (nd < 200 && nd > 10) {
-    whooshGain.gain.value = Math.max(0, (200 - nd) / 200) * 0.35;
-    whooshOsc.frequency.value = 50 + (200 - nd) * 0.5;
-    whooshFilter.frequency.value = 150 + (200 - nd) * 5;
-  } else whooshGain.gain.value = 0;
 }
 let audioCtx = null, turbineNoise = null, turbineFilter = null, turbineGain = null, turbineWhine = null, whineGain = null;
 function initAudio() {
@@ -1058,10 +983,8 @@ function spawnContrail(dt) {
   contrailTimer += dt;
   if (contrailTimer < 0.03) return;
   contrailTimer = 0;
-  const nozzles = planeMesh.userData.nozzles;
-  const scale = planeConfig.size;
-  for (const n of nozzles) {
-    const wp = plane.pos.clone().add(n.pos.clone().multiplyScalar(scale).applyQuaternion(plane.quat));
+  for (const n of planeMesh.userData.nozzles) {
+    const wp = plane.pos.clone().add(n.pos.clone().multiplyScalar(planeConfig.size).applyQuaternion(plane.quat));
     const smoke = new THREE.Mesh(new THREE.SphereGeometry(0.7 + Math.random()*0.5, 5, 5), new THREE.MeshBasicMaterial({color: 0xcccccc, transparent: true, opacity: 0.7}));
     smoke.position.copy(wp); scene.add(smoke);
     contrails.push({mesh: smoke, life: 0, maxLife: 2.5 + Math.random(), vel: new THREE.Vector3((Math.random()-0.5), (Math.random()-0.5), (Math.random()-0.5)), isSpark: false});
@@ -1076,7 +999,6 @@ function updateContrails(dt) {
     c.mesh.material.opacity = (c.isSpark ? 0.9 : 0.7) * (1 - t);
     if (c.life >= c.maxLife) { scene.remove(c.mesh); contrails.splice(i, 1); }
   }
-  while (contrails.length > 250) { const c = contrails.shift(); scene.remove(c.mesh); }
 }
 function dropBomb() {
   if (!started || gameOver || bombCount <= 0 || mode !== 'plane' || role !== 'pilot') return;
@@ -1094,7 +1016,7 @@ function dropBomb() {
 function spawnBombFromData(d) {
   const mesh = createBombMesh(d.btype);
   scene.add(mesh);
-  const bomb = {mesh, type: d.btype, bid: d.bid, pos: new THREE.Vector3(d.x, d.y, d.z), vel: new THREE.Vector3(d.vx, d.vy, d.vz), exploded: false, life: 0, impactPos: null, isAI: false, fallNotified: false, aiStraight: false, whistle: null, owner: d.owner || 'net'};
+  const bomb = {mesh, type: d.btype, bid: d.bid, pos: new THREE.Vector3(d.x, d.y, d.z), vel: new THREE.Vector3(d.vx, d.vy, d.vz), exploded: false, life: 0, impactPos: null, isAI: false, fallNotified: false, whistle: null, owner: d.owner || 'net'};
   bombs.push(bomb);
   if (!lastBomb) lastBomb = bomb;
   if (audioCtx) {
@@ -1133,7 +1055,6 @@ function explode(posIn, type, isRemote) {
       setTimeout(() => { bigExplosion(sp, type, 0.7); addCrater(sp, 0.7, type); }, i*70);
     }
   } else bigExplosion(pos, type, 1.5);
-  // Если клиент — не наносит урон, только визуал
   if (net.role === 'client') return;
   if (isRemote) return;
   if (net.role === 'host' && net.conn && net.conn.open) { try { net.conn.send({t: 'explode', x: pos.x, z: pos.z, btype: type}); } catch(e) {} }
@@ -1197,7 +1118,7 @@ function bigExplosion(pos, type, scale) {
   const fire1 = new THREE.Mesh(new THREE.SphereGeometry(9*scale,14,14), new THREE.MeshBasicMaterial({color: type==='inc'?0xff4400:0xff7700, transparent: true, opacity: .95}));
   fire1.position.copy(pos); scene.add(fire1);
   explosions.push({mesh: fire1, kind: 'fire', life: 0, maxLife: type==='inc'?4:2.5});
-  for (let i = 0; i < 50; i++) {
+  for (let i = 0; i < 30; i++) {
     const s = new THREE.Mesh(new THREE.SphereGeometry((2.5+Math.random()*3)*scale,6,6), new THREE.MeshBasicMaterial({color: 0x2a2a2a, transparent: true, opacity: .85}));
     s.position.copy(pos); scene.add(s);
     explosions.push({mesh: s, kind: 'smoke', life: 0, maxLife: 4+Math.random()*3, vel: new THREE.Vector3((Math.random()-.5)*18, Math.random()*12+3, (Math.random()-.5)*18)});
@@ -1205,7 +1126,7 @@ function bigExplosion(pos, type, scale) {
   const ring1 = new THREE.Mesh(new THREE.RingGeometry(2*scale,4*scale,32), new THREE.MeshBasicMaterial({color: 0xffcc44, side: THREE.DoubleSide, transparent: true, opacity: .95}));
   ring1.position.copy(pos); ring1.position.y = .3; ring1.rotation.x = -Math.PI/2; scene.add(ring1);
   explosions.push({mesh: ring1, kind: 'ring', life: 0, maxLife: 1.5});
-  for (let i = 0; i < 40*scale; i++) {
+  for (let i = 0; i < 25*scale; i++) {
     const d = new THREE.Mesh(new THREE.BoxGeometry(.4+Math.random()*.4,.4+.4*Math.random(),.4+Math.random()*.4), new THREE.MeshLambertMaterial({color: [0x444444, 0x5a4a3a, 0x3a2a1a][Math.floor(Math.random()*3)]}));
     d.position.copy(pos); scene.add(d);
     explosions.push({mesh: d, kind: 'debris', life: 0, maxLife: 2.5, vel: new THREE.Vector3((Math.random()-.5)*45, Math.random()*35+8, (Math.random()-.5)*45)});
@@ -1214,7 +1135,7 @@ function bigExplosion(pos, type, scale) {
 function destroyBuilding(b, impactPos) {
   b.destroyed = true;
   scene.remove(b.group);
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 30; i++) {
     const fw = b.w*(.08+Math.random()*.22), fh = b.h*(.06+Math.random()*.2), fdd = b.d*(.08+Math.random()*.22);
     const col = [0x8a7a6a, 0x6a5a4a, 0x7a6a5a, 0x3a2a1a, 0x5a4a3a][Math.floor(Math.random()*5)];
     const f = new THREE.Mesh(new THREE.BoxGeometry(fw,fh,fdd), new THREE.MeshLambertMaterial({color: col}));
@@ -1223,7 +1144,7 @@ function destroyBuilding(b, impactPos) {
     const dx = f.position.x-impactPos.x, dz = f.position.z-impactPos.z, dl = Math.hypot(dx,dz)||1, sp = 15+Math.random()*20;
     fragments.push({mesh: f, vel: new THREE.Vector3((dx/dl)*sp+(Math.random()-.5)*8, 6+Math.random()*15, (dz/dl)*sp+(Math.random()-.5)*8), angVel: new THREE.Vector3((Math.random()-.5)*7,(Math.random()-.5)*7,(Math.random()-.5)*7), life: 0, maxLife: 15+Math.random()*5});
   }
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < 60; i++) {
     const dust = new THREE.Mesh(new THREE.SphereGeometry(1.5+Math.random()*5,6,6), new THREE.MeshBasicMaterial({color: 0x9a9a8a, transparent: true, opacity: .8}));
     dust.position.set(b.x+(Math.random()-.5)*b.w, Math.random()*b.h, b.z+(Math.random()-.5)*b.d);
     scene.add(dust);
@@ -1239,7 +1160,7 @@ function updateFragments(dt) {
     if (f.mesh.position.y < .3) { f.mesh.position.y = .3; f.vel.y *= -.2; f.vel.x *= .7; f.vel.z *= .7; f.angVel.multiplyScalar(.5); }
     if (f.life > f.maxLife) { scene.remove(f.mesh); fragments.splice(i,1); }
   }
-  while (fragments.length > 350) { const f = fragments.shift(); scene.remove(f.mesh); }
+  while (fragments.length > 250) { const f = fragments.shift(); scene.remove(f.mesh); }
 }
 function updateExplosions(dt) {
   for (let i = explosions.length-1; i >= 0; i--) {
@@ -1352,7 +1273,6 @@ function updatePlane(dt) {
   const minY = onRunway ? 2 : 8;
   if (plane.pos.y < minY) { plane.pos.y = minY; const e2 = new THREE.Euler().setFromQuaternion(plane.quat, 'YXZ'); e2.z *= 0.85; e2.x = Math.min(e2.x, 0); plane.quat.setFromEuler(e2); }
   if (!hasTakenOff && plane.pos.y > 120) { hasTakenOff = true; postTakeoff(planeConfig.name); }
-  if (plane.pos.y > 100 && performance.now() - lastFlybyVideo > 25000 && Math.random() < 0.1) { lastFlybyVideo = performance.now(); const frames = takeFlybyVideoFrames(); if (frames && frames.length >= 2) postFlybyVideo(frames); }
   planeMesh.position.copy(plane.pos); planeMesh.quaternion.copy(plane.quat);
   skyMesh.position.copy(plane.pos);
   if (onRunway && plane.pos.y < 10 && plane.speed < 40) { document.getElementById('exitBtn').style.display = 'flex'; document.getElementById('brakeBtn').style.display = 'flex'; document.getElementById('landHint').style.display = 'none'; }
@@ -1427,7 +1347,6 @@ function drawRadar() {
     if (Math.hypot(dx, dz) < R) { ctx.fillStyle = '#f33'; ctx.beginPath(); ctx.arc(cx + dx, cy + dz, 6, 0, Math.PI*2); ctx.fill(); }
   }
   for (const b of bombs) { if (b.exploded) continue; const dx = (b.pos.x - center.x) / scale, dz = (b.pos.z - center.z) / scale; if (Math.hypot(dx, dz) < R) { ctx.fillStyle = '#ff0'; ctx.beginPath(); ctx.arc(cx + dx, cy + dz, 3, 0, Math.PI*2); ctx.fill(); } }
-  // Удалённые игроки
   for (const id in net.remotePlayers) {
     const rp = net.remotePlayers[id];
     const dx = (rp.mesh.position.x - center.x) / scale, dz = (rp.mesh.position.z - center.z) / scale;
@@ -1482,4 +1401,4 @@ function animate() {
 animate();
 </script>
 </body>
-                                                                                                                   </html>
+  </html>
