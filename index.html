@@ -80,7 +80,7 @@ canvas{display:block}
 .comment{font-size:11px;padding:4px 0;display:flex;gap:6px;line-height:1.4}
 .comment .author{color:#5eb5f7;font-weight:bold;flex-shrink:0}
 .comment .msg{color:#c8d0d8}
-#onlineMenu{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.95);z-index:200;display:flex;align-items:center;justify-content:center;flex-direction:column;padding:20px;box-sizing:border-box;font-family:monospace}
+#onlineMenu{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.95);z-index:200;display:flex;align-items:center;justify-content:center;flex-direction:column;padding:20px;box-sizing:border-box;font-family:monospace;overflow-y:auto}
 #onlineMenu button{display:block;width:85%;max-width:400px;padding:18px;margin:8px 0;font-family:monospace;font-size:16px;font-weight:bold;border-radius:10px;color:#fff;cursor:pointer}
 #hostBtn{background:rgba(0,200,100,.3);border:2px solid #0f0}
 #joinBtn{background:rgba(0,150,255,.3);border:2px solid #5eb5f7}
@@ -130,6 +130,23 @@ canvas{display:block}
 <script type="module">
 import * as THREE from 'three';
 
+// ===== НАСТРОЙКИ PEERJS СО STUN-СЕРВЕРАМИ =====
+const PEER_CONFIG = {
+  config: {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
+      { urls: 'stun:stun4.l.google.com:19302' },
+      { urls: 'stun:global.stun.twilio.com:3478' },
+      { urls: 'stun:stun.services.mozilla.com' }
+    ],
+    sdpSemantics: 'unified-plan'
+  },
+  debug: 1
+};
+
 const net = { role: 'offline', peer: null, conn: null, myId: null, remotePlayers: {}, bombCounter: 0, seenBids: new Set() };
 
 function createRemotePlayerMesh(name, role) {
@@ -159,27 +176,29 @@ function updateRemotePlayer(id, data, scene) {
 }
 
 document.getElementById('hostBtn').addEventListener('click', () => {
-  const peer = new Peer();
-  peer.on('open', id => {
-    net.role = 'host'; net.peer = peer; net.myId = id;
-    document.getElementById('myId').textContent = id;
-    document.getElementById('hostInfo').style.display = 'block';
-  });
-  peer.on('connection', conn => {
-    net.conn = conn;
-    document.getElementById('hostStatus').textContent = '✓ Друг подключился!';
-    document.getElementById('hostStatus').style.color = '#0f0';
-    setTimeout(() => { document.getElementById('onlineMenu').style.display = 'none'; chooseRole(); }, 800);
-    conn.on('data', d => {
-      if (d.t === 'state') updateRemotePlayer(conn.peer, d, scene);
-      if (d.t === 'drop' && !net.seenBids.has(d.bid)) { net.seenBids.add(d.bid); spawnBombFromData(d); }
+  try {
+    const peer = new Peer(null, PEER_CONFIG);
+    peer.on('open', id => {
+      net.role = 'host'; net.peer = peer; net.myId = id;
+      document.getElementById('myId').textContent = id;
+      document.getElementById('hostInfo').style.display = 'block';
     });
-    conn.on('close', () => {
-      document.getElementById('hostStatus').textContent = 'Друг отключился';
-      document.getElementById('hostStatus').style.color = '#f33';
+    peer.on('connection', conn => {
+      net.conn = conn;
+      document.getElementById('hostStatus').textContent = '✓ Друг подключился!';
+      document.getElementById('hostStatus').style.color = '#0f0';
+      setTimeout(() => { document.getElementById('onlineMenu').style.display = 'none'; chooseRole(); }, 800);
+      conn.on('data', d => {
+        if (d.t === 'state') updateRemotePlayer(conn.peer, d, scene);
+        if (d.t === 'drop' && !net.seenBids.has(d.bid)) { net.seenBids.add(d.bid); spawnBombFromData(d); }
+      });
+      conn.on('close', () => {
+        document.getElementById('hostStatus').textContent = 'Друг отключился';
+        document.getElementById('hostStatus').style.color = '#f33';
+      });
     });
-  });
-  peer.on('error', err => alert('Ошибка: ' + err.message));
+    peer.on('error', err => { console.log('PeerJS:', err); });
+  } catch(e) { console.log(e); }
 });
 
 document.getElementById('joinBtn').addEventListener('click', () => {
@@ -189,36 +208,53 @@ document.getElementById('joinBtn').addEventListener('click', () => {
 document.getElementById('connectBtn').addEventListener('click', () => {
   const hostId = document.getElementById('hostIdInput').value.trim();
   if (!hostId) { document.getElementById('joinStatus').textContent = 'Введи ID'; return; }
-  const peer = new Peer();
-  peer.on('open', () => {
-    document.getElementById('joinStatus').textContent = 'Подключаемся...';
-    const conn = peer.connect(hostId, {reliable: false});
-    conn.on('open', () => {
-      net.role = 'client'; net.peer = peer; net.conn = conn;
-      document.getElementById('joinStatus').textContent = '✓ Подключено!';
-      document.getElementById('joinStatus').style.color = '#0f0';
-      setTimeout(() => { document.getElementById('onlineMenu').style.display = 'none'; chooseRole(); }, 800);
-      conn.on('data', d => {
-        if (d.t === 'state') updateRemotePlayer('host', d, scene);
-        if (d.t === 'ai') updateRemoteAI(d);
-        if (d.t === 'drop' && !net.seenBids.has(d.bid)) { net.seenBids.add(d.bid); spawnBombFromData(d); }
-        if (d.t === 'building') updateRemoteBuilding(d);
-        if (d.t === 'post') addChannelPost(d.ch, d.author, d.text, d.photo, d.caption, d.loc, d.comments, d.videoFrames);
+  try {
+    const peer = new Peer(null, PEER_CONFIG);
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      if (!net.conn || !net.conn.open) {
+        timedOut = true;
+        document.getElementById('joinStatus').textContent = 'Не удаётся подключиться. Попробуй: 1) друг перезапустил игру 2) у одного из вас VPN';
+        document.getElementById('joinStatus').style.color = '#f33';
+      }
+    }, 20000);
+    peer.on('open', () => {
+      document.getElementById('joinStatus').textContent = 'Подключаемся...';
+      const conn = peer.connect(hostId, {reliable: false, serialization: 'json'});
+      conn.on('open', () => {
+        clearTimeout(timeout);
+        net.role = 'client'; net.peer = peer; net.conn = conn;
+        document.getElementById('joinStatus').textContent = '✓ Подключено!';
+        document.getElementById('joinStatus').style.color = '#0f0';
+        setTimeout(() => { document.getElementById('onlineMenu').style.display = 'none'; chooseRole(); }, 800);
+        conn.on('data', d => {
+          if (d.t === 'state') updateRemotePlayer('host', d, scene);
+          if (d.t === 'ai') updateRemoteAI(d);
+          if (d.t === 'drop' && !net.seenBids.has(d.bid)) { net.seenBids.add(d.bid); spawnBombFromData(d); }
+          if (d.t === 'building') updateRemoteBuilding(d);
+          if (d.t === 'post') addChannelPost(d.ch, d.author, d.text, d.photo, d.caption, d.loc, d.comments, d.videoFrames);
+        });
+        conn.on('close', () => {
+          document.getElementById('joinStatus').textContent = 'Хост отключился';
+          document.getElementById('joinStatus').style.color = '#f33';
+        });
       });
-      conn.on('close', () => {
-        document.getElementById('joinStatus').textContent = 'Хост отключился';
+      conn.on('error', err => {
+        clearTimeout(timeout);
+        console.log('Conn error:', err);
+        document.getElementById('joinStatus').textContent = 'Ошибка соединения — попробуй снова';
         document.getElementById('joinStatus').style.color = '#f33';
       });
     });
-    conn.on('error', err => {
-      document.getElementById('joinStatus').textContent = 'Ошибка: ' + err;
-      document.getElementById('joinStatus').style.color = '#f33';
+    peer.on('error', err => {
+      clearTimeout(timeout);
+      console.log('PeerJS:', err);
+      if (!timedOut) {
+        document.getElementById('joinStatus').textContent = 'Ошибка: ' + err.type + ' — попробуй снова';
+        document.getElementById('joinStatus').style.color = '#f33';
+      }
     });
-  });
-  peer.on('error', err => {
-    document.getElementById('joinStatus').textContent = 'Ошибка: ' + err.message;
-    document.getElementById('joinStatus').style.color = '#f33';
-  });
+  } catch(e) { console.log(e); }
 });
 
 document.getElementById('offlineBtn').addEventListener('click', () => {
@@ -536,12 +572,11 @@ const bombs = [], explosions = [], aaShells = [], flares = [], contrails = [];
 let bombCount = 0, hits = 0, lastBomb = null, viewMode = 0, throttleInput = 0, currentBombType = 'fab';
 let playerHP = 100, playerMaxHP = 100, started = false, gameOver = false;
 let role = 'pilot';
-let hasTakenOff = false, braking = false, mode = 'plane', lastFlybyVideo = 0;
+let hasTakenOff = false, braking = false, mode = 'plane';
 const groundPlayer = {pos: new THREE.Vector3(0, 1.7, 0), yaw: 0, pitch: 0, speed: 16, vy: 0};
 const smoothMove = {x: 0, y: 0}, smoothLook = {x: 0, y: 0};
 const rearm = {active: false, timer: 0, cooldown: 0};
 const REARM_TIME = 4, REARM_CD = 15;
-let whooshOsc = null, whooshGain = null, whooshFilter = null;
 const stickL = document.getElementById('stickL'), knobL = document.getElementById('knobL');
 const stickR = document.getElementById('stickR'), knobR = document.getElementById('knobR');
 const touchState = {L: null, R: null};
@@ -734,13 +769,13 @@ function renderFeed() {
     });
   }, 50);
 }
-const MIL_NAMES = ['Владимир', 'Сергей', 'Андрей', 'Дмитрий', 'Николай', 'Максим', 'Иван', 'Олег', 'Пётр', 'Роман', 'Виктор', 'Борис'];
-const CIV_NAMES = ['Ольга', 'Мария', 'Аноним', 'Сосед', 'Иван П.', 'Волонтёр', 'Бабушка Зина', 'Местный', 'Сергей', 'Анна', 'Пётр', 'Екатерина'];
-const CIV_EXPLOSION_TEXTS = ['Господи, что это было?', 'Весь дом задрожал!', 'Мы в подвале.', 'Свет вырубился.', 'Осколки по улице.', 'Дети в панике.', 'Пожарные не едут.', 'Окна повылетали.', 'Дым столбом.', 'Уши заложило.', 'Стена треснула.'];
-const CIV_TAKEOFF_TEXTS = ['Опять гул над городом.', 'Опять взлетают.', 'Прячемся.', 'Собака воет.', 'Дети испугались.'];
-const CIV_BOMB_FALLING_TEXTS = ['Слышно свист в воздухе!', 'Бомба летит!', 'Свист!', 'Ложись!', 'Сейчас рванёт!'];
+const MIL_NAMES = ['Владимир', 'Сергей', 'Андрей', 'Дмитрий', 'Николай', 'Максим', 'Иван'];
+const CIV_NAMES = ['Ольга', 'Мария', 'Аноним', 'Сосед', 'Волонтёр', 'Бабушка Зина', 'Сергей', 'Анна', 'Пётр'];
+const CIV_EXPLOSION_TEXTS = ['Господи, что это было?', 'Весь дом задрожал!', 'Мы в подвале.', 'Свет вырубился.', 'Осколки по улице.', 'Дети в панике.', 'Окна повылетали.', 'Дым столбом.', 'Стена треснула.'];
+const CIV_TAKEOFF_TEXTS = ['Опять гул над городом.', 'Опять взлетают.', 'Прячемся.', 'Дети испугались.'];
+const CIV_BOMB_FALLING_TEXTS = ['Слышно свист в воздухе!', 'Бомба летит!', 'Свист!', 'Ложись!'];
 const MIL_BOMB_DROP_TEXTS = ['КАБ в воздухе!', 'Бомба сброшена!', 'Пуск!'];
-const MIL_COMMENTS = ['Принято.', 'Цель поражена.', 'ПВО промахнулось.', 'Держим оборону.'];
+const MIL_COMMENTS = ['Принято.', 'Цель поражена.', 'ПВО промахнулось.'];
 const NEWS_TEXTS = ['Экстренные службы работают.', 'Информация уточняется.'];
 function randomComments(pool, names, minN, maxN) {
   const pc = pool.slice();
@@ -769,7 +804,7 @@ function addChannelPost(channel, author, text, photoData, caption, loc, comments
 }
 function postTakeoff(acName) {
   addChannelPost('mil', 'ОПЕР', `✈️ ${acName} взлетел.`, null, null, null, randomComments(MIL_COMMENTS, MIL_NAMES, 1, 3));
-  addChannelPost('civ', 'житель', `Опять самолёт взлетел...`, null, null, null, randomComments(CIV_TAKEOFF_TEXTS, CIV_NAMES, 3, 5));
+  addChannelPost('civ', 'житель', `Опять самолёт взлетел...`, null, null, null, randomComments(CIV_TAKEOFF_TEXTS, CIV_NAMES, 2, 4));
 }
 function postLanding() { addChannelPost('mil', 'ОПЕР', `🛬 Самолёт вернулся.`, null, null, null, randomComments(MIL_COMMENTS, MIL_NAMES, 1, 3)); }
 function postAllClear() {
@@ -987,7 +1022,7 @@ function spawnContrail(dt) {
     const wp = plane.pos.clone().add(n.pos.clone().multiplyScalar(planeConfig.size).applyQuaternion(plane.quat));
     const smoke = new THREE.Mesh(new THREE.SphereGeometry(0.7 + Math.random()*0.5, 5, 5), new THREE.MeshBasicMaterial({color: 0xcccccc, transparent: true, opacity: 0.7}));
     smoke.position.copy(wp); scene.add(smoke);
-    contrails.push({mesh: smoke, life: 0, maxLife: 2.5 + Math.random(), vel: new THREE.Vector3((Math.random()-0.5), (Math.random()-0.5), (Math.random()-0.5)), isSpark: false});
+    contrails.push({mesh: smoke, life: 0, maxLife: 2.5 + Math.random(), vel: new THREE.Vector3((Math.random()-0.5), (Math.random()-0.5), (Math.random()-0.5))});
   }
 }
 function updateContrails(dt) {
@@ -996,7 +1031,7 @@ function updateContrails(dt) {
     c.mesh.position.addScaledVector(c.vel, dt);
     c.mesh.scale.setScalar(1 + c.life * 0.5);
     const t = c.life / c.maxLife;
-    c.mesh.material.opacity = (c.isSpark ? 0.9 : 0.7) * (1 - t);
+    c.mesh.material.opacity = 0.7 * (1 - t);
     if (c.life >= c.maxLife) { scene.remove(c.mesh); contrails.splice(i, 1); }
   }
 }
@@ -1087,7 +1122,7 @@ function damageBuilding(b, intensity) {
     const w = b.windowMeshes[idx];
     if (w.parent) { const h = new THREE.Mesh(new THREE.BoxGeometry(w.geometry.parameters.width, w.geometry.parameters.height, 0.1), new THREE.MeshLambertMaterial({color: 0x000000})); h.position.copy(w.position); w.parent.add(h); w.parent.remove(w); b.windowMeshes.splice(idx, 1); }
   }
-  for (let i = 0; i < 25; i++) {
+  for (let i = 0; i < 20; i++) {
     const size = 0.3 + Math.random()*1.3;
     const frag = new THREE.Mesh(new THREE.BoxGeometry(size, size, size), new THREE.MeshLambertMaterial({color: [0x6a5a4a, 0x5a4a3a, 0x4a3a2a][Math.floor(Math.random()*3)]}));
     frag.position.set(b.x + (Math.random()-0.5)*b.w, b.h*(0.4 + Math.random()*0.6), b.z + (Math.random()-0.5)*b.d);
@@ -1118,7 +1153,7 @@ function bigExplosion(pos, type, scale) {
   const fire1 = new THREE.Mesh(new THREE.SphereGeometry(9*scale,14,14), new THREE.MeshBasicMaterial({color: type==='inc'?0xff4400:0xff7700, transparent: true, opacity: .95}));
   fire1.position.copy(pos); scene.add(fire1);
   explosions.push({mesh: fire1, kind: 'fire', life: 0, maxLife: type==='inc'?4:2.5});
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 25; i++) {
     const s = new THREE.Mesh(new THREE.SphereGeometry((2.5+Math.random()*3)*scale,6,6), new THREE.MeshBasicMaterial({color: 0x2a2a2a, transparent: true, opacity: .85}));
     s.position.copy(pos); scene.add(s);
     explosions.push({mesh: s, kind: 'smoke', life: 0, maxLife: 4+Math.random()*3, vel: new THREE.Vector3((Math.random()-.5)*18, Math.random()*12+3, (Math.random()-.5)*18)});
@@ -1126,7 +1161,7 @@ function bigExplosion(pos, type, scale) {
   const ring1 = new THREE.Mesh(new THREE.RingGeometry(2*scale,4*scale,32), new THREE.MeshBasicMaterial({color: 0xffcc44, side: THREE.DoubleSide, transparent: true, opacity: .95}));
   ring1.position.copy(pos); ring1.position.y = .3; ring1.rotation.x = -Math.PI/2; scene.add(ring1);
   explosions.push({mesh: ring1, kind: 'ring', life: 0, maxLife: 1.5});
-  for (let i = 0; i < 25*scale; i++) {
+  for (let i = 0; i < 20*scale; i++) {
     const d = new THREE.Mesh(new THREE.BoxGeometry(.4+Math.random()*.4,.4+.4*Math.random(),.4+Math.random()*.4), new THREE.MeshLambertMaterial({color: [0x444444, 0x5a4a3a, 0x3a2a1a][Math.floor(Math.random()*3)]}));
     d.position.copy(pos); scene.add(d);
     explosions.push({mesh: d, kind: 'debris', life: 0, maxLife: 2.5, vel: new THREE.Vector3((Math.random()-.5)*45, Math.random()*35+8, (Math.random()-.5)*45)});
@@ -1135,7 +1170,7 @@ function bigExplosion(pos, type, scale) {
 function destroyBuilding(b, impactPos) {
   b.destroyed = true;
   scene.remove(b.group);
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 25; i++) {
     const fw = b.w*(.08+Math.random()*.22), fh = b.h*(.06+Math.random()*.2), fdd = b.d*(.08+Math.random()*.22);
     const col = [0x8a7a6a, 0x6a5a4a, 0x7a6a5a, 0x3a2a1a, 0x5a4a3a][Math.floor(Math.random()*5)];
     const f = new THREE.Mesh(new THREE.BoxGeometry(fw,fh,fdd), new THREE.MeshLambertMaterial({color: col}));
@@ -1144,7 +1179,7 @@ function destroyBuilding(b, impactPos) {
     const dx = f.position.x-impactPos.x, dz = f.position.z-impactPos.z, dl = Math.hypot(dx,dz)||1, sp = 15+Math.random()*20;
     fragments.push({mesh: f, vel: new THREE.Vector3((dx/dl)*sp+(Math.random()-.5)*8, 6+Math.random()*15, (dz/dl)*sp+(Math.random()-.5)*8), angVel: new THREE.Vector3((Math.random()-.5)*7,(Math.random()-.5)*7,(Math.random()-.5)*7), life: 0, maxLife: 15+Math.random()*5});
   }
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 40; i++) {
     const dust = new THREE.Mesh(new THREE.SphereGeometry(1.5+Math.random()*5,6,6), new THREE.MeshBasicMaterial({color: 0x9a9a8a, transparent: true, opacity: .8}));
     dust.position.set(b.x+(Math.random()-.5)*b.w, Math.random()*b.h, b.z+(Math.random()-.5)*b.d);
     scene.add(dust);
@@ -1160,7 +1195,7 @@ function updateFragments(dt) {
     if (f.mesh.position.y < .3) { f.mesh.position.y = .3; f.vel.y *= -.2; f.vel.x *= .7; f.vel.z *= .7; f.angVel.multiplyScalar(.5); }
     if (f.life > f.maxLife) { scene.remove(f.mesh); fragments.splice(i,1); }
   }
-  while (fragments.length > 250) { const f = fragments.shift(); scene.remove(f.mesh); }
+  while (fragments.length > 200) { const f = fragments.shift(); scene.remove(f.mesh); }
 }
 function updateExplosions(dt) {
   for (let i = explosions.length-1; i >= 0; i--) {
