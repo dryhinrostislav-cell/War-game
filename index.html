@@ -85,8 +85,8 @@ canvas{display:block}
 #hostBtn{background:rgba(0,200,100,.3);border:2px solid #0f0}
 #joinBtn{background:rgba(0,150,255,.3);border:2px solid #5eb5f7}
 #offlineBtn{background:rgba(100,100,100,.3);border:2px solid #888;padding:12px!important;font-size:13px!important;margin-top:20px!important}
-#myId{font-size:24px;background:#000;padding:12px;border:2px solid #0f0;margin:10px 0;letter-spacing:4px;color:#0f0;text-align:center;user-select:all;-webkit-user-select:all;word-break:break-all}
-#hostIdInput{width:85%;max-width:400px;padding:14px;background:#000;border:2px solid #5eb5f7;color:#fff;font-family:monospace;font-size:20px;text-align:center;box-sizing:border-box;border-radius:8px;letter-spacing:3px;margin-top:10px}
+#myId{font-size:18px;background:#000;padding:12px;border:2px solid #0f0;margin:10px 0;letter-spacing:2px;color:#0f0;text-align:center;user-select:all;-webkit-user-select:all;word-break:break-all}
+#hostIdInput{width:85%;max-width:400px;padding:14px;background:#000;border:2px solid #5eb5f7;color:#fff;font-family:monospace;font-size:14px;text-align:center;box-sizing:border-box;border-radius:8px;letter-spacing:1px;margin-top:10px}
 #connectBtn{width:85%!important;max-width:400px!important;background:rgba(0,150,255,.4)!important;border:2px solid #5eb5f7!important;margin-top:12px!important}
 </style>
 </head>
@@ -130,21 +130,32 @@ canvas{display:block}
 <script type="module">
 import * as THREE from 'three';
 
-// ===== НАСТРОЙКИ PEERJS СО STUN-СЕРВЕРАМИ =====
+// ===== НАСТРОЙКИ PEERJS С TURN-СЕРВЕРАМИ =====
 const PEER_CONFIG = {
   config: {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun2.l.google.com:19302' },
-      { urls: 'stun:stun3.l.google.com:19302' },
-      { urls: 'stun:stun4.l.google.com:19302' },
-      { urls: 'stun:global.stun.twilio.com:3478' },
-      { urls: 'stun:stun.services.mozilla.com' }
+      {
+        urls: 'turn:openrelay.metered.ca:80',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:443',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      }
     ],
-    sdpSemantics: 'unified-plan'
+    sdpSemantics: 'unified-plan',
+    iceCandidatePoolSize: 10
   },
-  debug: 1
+  debug: 2
 };
 
 const net = { role: 'offline', peer: null, conn: null, myId: null, remotePlayers: {}, bombCounter: 0, seenBids: new Set() };
@@ -214,12 +225,12 @@ document.getElementById('connectBtn').addEventListener('click', () => {
     const timeout = setTimeout(() => {
       if (!net.conn || !net.conn.open) {
         timedOut = true;
-        document.getElementById('joinStatus').textContent = 'Не удаётся подключиться. Попробуй: 1) друг перезапустил игру 2) у одного из вас VPN';
+        document.getElementById('joinStatus').textContent = 'Не подключилось. Попробуй ещё раз или перезапусти оба';
         document.getElementById('joinStatus').style.color = '#f33';
       }
-    }, 20000);
+    }, 30000);
     peer.on('open', () => {
-      document.getElementById('joinStatus').textContent = 'Подключаемся...';
+      document.getElementById('joinStatus').textContent = 'Подключаемся (через TURN-релей, может занять 10-20 сек)...';
       const conn = peer.connect(hostId, {reliable: false, serialization: 'json'});
       conn.on('open', () => {
         clearTimeout(timeout);
@@ -250,7 +261,7 @@ document.getElementById('connectBtn').addEventListener('click', () => {
       clearTimeout(timeout);
       console.log('PeerJS:', err);
       if (!timedOut) {
-        document.getElementById('joinStatus').textContent = 'Ошибка: ' + err.type + ' — попробуй снова';
+        document.getElementById('joinStatus').textContent = 'Ошибка: ' + err.type;
         document.getElementById('joinStatus').style.color = '#f33';
       }
     });
@@ -769,9 +780,9 @@ function renderFeed() {
     });
   }, 50);
 }
-const MIL_NAMES = ['Владимир', 'Сергей', 'Андрей', 'Дмитрий', 'Николай', 'Максим', 'Иван'];
-const CIV_NAMES = ['Ольга', 'Мария', 'Аноним', 'Сосед', 'Волонтёр', 'Бабушка Зина', 'Сергей', 'Анна', 'Пётр'];
-const CIV_EXPLOSION_TEXTS = ['Господи, что это было?', 'Весь дом задрожал!', 'Мы в подвале.', 'Свет вырубился.', 'Осколки по улице.', 'Дети в панике.', 'Окна повылетали.', 'Дым столбом.', 'Стена треснула.'];
+const MIL_NAMES = ['Владимир', 'Сергей', 'Андрей', 'Дмитрий', 'Николай'];
+const CIV_NAMES = ['Ольга', 'Мария', 'Сосед', 'Волонтёр', 'Сергей', 'Анна', 'Пётр'];
+const CIV_EXPLOSION_TEXTS = ['Господи, что это было?', 'Весь дом задрожал!', 'Мы в подвале.', 'Осколки по улице.', 'Дети в панике.', 'Окна повылетали.', 'Дым столбом.'];
 const CIV_TAKEOFF_TEXTS = ['Опять гул над городом.', 'Опять взлетают.', 'Прячемся.', 'Дети испугались.'];
 const CIV_BOMB_FALLING_TEXTS = ['Слышно свист в воздухе!', 'Бомба летит!', 'Свист!', 'Ложись!'];
 const MIL_BOMB_DROP_TEXTS = ['КАБ в воздухе!', 'Бомба сброшена!', 'Пуск!'];
