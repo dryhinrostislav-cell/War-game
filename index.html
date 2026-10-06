@@ -130,32 +130,25 @@ canvas{display:block}
 <script type="module">
 import * as THREE from 'three';
 
-// ===== НАСТРОЙКИ PEERJS С TURN-СЕРВЕРАМИ =====
+// ===== СВОЙ СЕРВЕР (Cloudflare) =====
+const SERVER_HOST = 'shy-dream-a481.dryhinrostislav.workers.dev';
+const SERVER_PORT = 443;
+const SERVER_PATH = '/';
+const SERVER_SECURE = true;
+
 const PEER_CONFIG = {
   config: {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-      {
-        urls: 'turn:openrelay.metered.ca:80',
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-      },
-      {
-        urls: 'turn:openrelay.metered.ca:443',
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-      },
-      {
-        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-      }
+      { urls: 'stun:stun1.l.google.com:19302' }
     ],
-    sdpSemantics: 'unified-plan',
-    iceCandidatePoolSize: 10
+    sdpSemantics: 'unified-plan'
   },
-  debug: 2
+  host: SERVER_HOST,
+  port: SERVER_PORT,
+  path: SERVER_PATH,
+  secure: SERVER_SECURE,
+  debug: 1
 };
 
 const net = { role: 'offline', peer: null, conn: null, myId: null, remotePlayers: {}, bombCounter: 0, seenBids: new Set() };
@@ -221,16 +214,14 @@ document.getElementById('connectBtn').addEventListener('click', () => {
   if (!hostId) { document.getElementById('joinStatus').textContent = 'Введи ID'; return; }
   try {
     const peer = new Peer(null, PEER_CONFIG);
-    let timedOut = false;
     const timeout = setTimeout(() => {
       if (!net.conn || !net.conn.open) {
-        timedOut = true;
-        document.getElementById('joinStatus').textContent = 'Не подключилось. Попробуй ещё раз или перезапусти оба';
+        document.getElementById('joinStatus').textContent = 'Не подключилось. Попробуй ещё раз';
         document.getElementById('joinStatus').style.color = '#f33';
       }
-    }, 30000);
+    }, 20000);
     peer.on('open', () => {
-      document.getElementById('joinStatus').textContent = 'Подключаемся (через TURN-релей, может занять 10-20 сек)...';
+      document.getElementById('joinStatus').textContent = 'Подключаемся...';
       const conn = peer.connect(hostId, {reliable: false, serialization: 'json'});
       conn.on('open', () => {
         clearTimeout(timeout);
@@ -252,18 +243,14 @@ document.getElementById('connectBtn').addEventListener('click', () => {
       });
       conn.on('error', err => {
         clearTimeout(timeout);
-        console.log('Conn error:', err);
-        document.getElementById('joinStatus').textContent = 'Ошибка соединения — попробуй снова';
+        document.getElementById('joinStatus').textContent = 'Ошибка соединения';
         document.getElementById('joinStatus').style.color = '#f33';
       });
     });
     peer.on('error', err => {
       clearTimeout(timeout);
-      console.log('PeerJS:', err);
-      if (!timedOut) {
-        document.getElementById('joinStatus').textContent = 'Ошибка: ' + err.type;
-        document.getElementById('joinStatus').style.color = '#f33';
-      }
+      document.getElementById('joinStatus').textContent = 'Ошибка: ' + err.type;
+      document.getElementById('joinStatus').style.color = '#f33';
     });
   } catch(e) { console.log(e); }
 });
@@ -324,7 +311,6 @@ const renderer = new THREE.WebGLRenderer({antialias:false, powerPreference:'high
 renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
 renderer.setSize(W, H);
 document.body.appendChild(renderer.domElement);
-addEventListener('resize', () => { if (started) location.reload(); });
 const photoRT = new THREE.WebGLRenderTarget(320, 200, {format: THREE.RGBAFormat, type: THREE.UnsignedByteType});
 const skyCanvas = document.createElement('canvas');
 skyCanvas.width = 8; skyCanvas.height = 256;
