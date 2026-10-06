@@ -130,7 +130,6 @@ canvas{display:block}
 <script type="module">
 import * as THREE from 'three';
 
-// ===== СВОЙ СЕРВЕР (Cloudflare) =====
 const SERVER_HOST = 'shy-dream-a481.dryhinrostislav.workers.dev';
 const SERVER_PORT = 443;
 const SERVER_PATH = '/';
@@ -181,7 +180,8 @@ function updateRemotePlayer(id, data, scene) {
 
 document.getElementById('hostBtn').addEventListener('click', () => {
   try {
-    const peer = new Peer(null, PEER_CONFIG);
+    const myRandomId = 'p' + Math.random().toString(36).slice(2, 10);
+    const peer = new Peer(myRandomId, PEER_CONFIG);
     peer.on('open', id => {
       net.role = 'host'; net.peer = peer; net.myId = id;
       document.getElementById('myId').textContent = id;
@@ -213,7 +213,8 @@ document.getElementById('connectBtn').addEventListener('click', () => {
   const hostId = document.getElementById('hostIdInput').value.trim();
   if (!hostId) { document.getElementById('joinStatus').textContent = 'Введи ID'; return; }
   try {
-    const peer = new Peer(null, PEER_CONFIG);
+    const myRandomId = 'c' + Math.random().toString(36).slice(2, 10);
+    const peer = new Peer(myRandomId, PEER_CONFIG);
     const timeout = setTimeout(() => {
       if (!net.conn || !net.conn.open) {
         document.getElementById('joinStatus').textContent = 'Не подключилось. Попробуй ещё раз';
