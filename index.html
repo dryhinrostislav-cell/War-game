@@ -81,7 +81,8 @@ canvas{display:block}
 .comment .author{color:#5eb5f7;font-weight:bold;flex-shrink:0}
 .comment .msg{color:#c8d0d8}
 #onlineMenu{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.95);z-index:200;display:flex;align-items:center;justify-content:center;flex-direction:column;padding:20px;box-sizing:border-box;font-family:monospace;overflow-y:auto}
-#onlineMenu button{display:block;width:85%;max-width:400px;padding:18px;margin:8px 0;font-family:monospace;font-size:16px;font-weight:bold;border-radius:10px;color:#fff;cursor:pointer}
+#onlineMenu button{display:block;width:85%;max-width:400px;padding:18px;margin:8px 0;font-family:monospace;font-size:16px;font-weight:bold;border-radius:10px;color:#fff;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+#onlineMenu button:active{transform:scale(0.97);opacity:0.8}
 #hostBtn{background:rgba(0,200,100,.3);border:2px solid #0f0}
 #joinBtn{background:rgba(0,150,255,.3);border:2px solid #5eb5f7}
 #offlineBtn{background:rgba(100,100,100,.3);border:2px solid #888;padding:12px!important;font-size:13px!important;margin-top:20px!important}
@@ -152,6 +153,22 @@ const PEER_CONFIG = {
 
 const net = { role: 'offline', peer: null, conn: null, myId: null, remotePlayers: {}, bombCounter: 0, seenBids: new Set() };
 
+function bindMenuBtn(id, handler) {
+  const el = document.getElementById(id);
+  let lastTouch = 0;
+  el.addEventListener('click', e => {
+    e.preventDefault();
+    handler();
+  });
+  el.addEventListener('touchstart', e => {
+    e.preventDefault();
+    const now = Date.now();
+    if (now - lastTouch < 500) return;
+    lastTouch = now;
+    handler();
+  }, {passive: false});
+}
+
 function createRemotePlayerMesh(name, role) {
   const g = new THREE.Group();
   const color = role === 'civilian' ? 0x4488ff : 0xff4444;
@@ -178,12 +195,20 @@ function updateRemotePlayer(id, data, scene) {
   rp.targetYaw = data.yaw || 0;
 }
 
-document.getElementById('hostBtn').addEventListener('click', () => {
+let hostStarting = false;
+bindMenuBtn('hostBtn', () => {
+  if (hostStarting) return;
+  hostStarting = true;
+  const btn = document.getElementById('hostBtn');
+  btn.textContent = 'ПОДКЛЮЧЕНИЕ...';
+  btn.style.background = 'rgba(255,200,0,.3)';
   try {
     const myRandomId = 'p' + Math.random().toString(36).slice(2, 10);
     const peer = new Peer(myRandomId, PEER_CONFIG);
     peer.on('open', id => {
       net.role = 'host'; net.peer = peer; net.myId = id;
+      btn.textContent = '✓ КОМНАТА СОЗДАНА';
+      btn.style.background = 'rgba(0,200,100,.5)';
       document.getElementById('myId').textContent = id;
       document.getElementById('hostInfo').style.display = 'block';
     });
@@ -201,24 +226,50 @@ document.getElementById('hostBtn').addEventListener('click', () => {
         document.getElementById('hostStatus').style.color = '#f33';
       });
     });
-    peer.on('error', err => { console.log('PeerJS:', err); });
-  } catch(e) { console.log(e); }
+    peer.on('error', err => {
+      btn.textContent = 'ОШИБКА: ' + (err.type || err.message || 'неизвестная');
+      btn.style.background = 'rgba(255,0,0,.5)';
+      btn.style.fontSize = '12px';
+      console.log('PeerJS error:', err);
+      hostStarting = false;
+    });
+    setTimeout(() => {
+      if (hostStarting && net.role !== 'host') {
+        btn.textContent = 'ТАЙМАУТ — проверь сервер';
+        btn.style.background = 'rgba(255,0,0,.5)';
+        btn.style.fontSize = '12px';
+        hostStarting = false;
+      }
+    }, 15000);
+  } catch(e) {
+    btn.textContent = 'КРАШ: ' + e.message;
+    btn.style.background = 'rgba(255,0,0,.5)';
+    hostStarting = false;
+    console.log(e);
+  }
 });
 
-document.getElementById('joinBtn').addEventListener('click', () => {
+bindMenuBtn('joinBtn', () => {
   document.getElementById('joinInfo').style.display = 'block';
 });
 
-document.getElementById('connectBtn').addEventListener('click', () => {
+let joinStarting = false;
+bindMenuBtn('connectBtn', () => {
+  if (joinStarting) return;
+  joinStarting = true;
   const hostId = document.getElementById('hostIdInput').value.trim();
-  if (!hostId) { document.getElementById('joinStatus').textContent = 'Введи ID'; return; }
+  if (!hostId) { document.getElementById('joinStatus').textContent = 'Введи ID'; joinStarting = false; return; }
+  const btn = document.getElementById('connectBtn');
+  btn.textContent = 'ПОДКЛЮЧЕНИЕ...';
   try {
     const myRandomId = 'c' + Math.random().toString(36).slice(2, 10);
     const peer = new Peer(myRandomId, PEER_CONFIG);
     const timeout = setTimeout(() => {
       if (!net.conn || !net.conn.open) {
-        document.getElementById('joinStatus').textContent = 'Не подключилось. Попробуй ещё раз';
+        btn.textContent = 'НЕ УДАЛОСЬ';
+        document.getElementById('joinStatus').textContent = 'Таймаут. Попробуй ещё раз';
         document.getElementById('joinStatus').style.color = '#f33';
+        joinStarting = false;
       }
     }, 20000);
     peer.on('open', () => {
@@ -227,7 +278,9 @@ document.getElementById('connectBtn').addEventListener('click', () => {
       conn.on('open', () => {
         clearTimeout(timeout);
         net.role = 'client'; net.peer = peer; net.conn = conn;
-        document.getElementById('joinStatus').textContent = '✓ Подключено!';
+        btn.textContent = '✓ ПОДКЛЮЧЕНО';
+        btn.style.background = 'rgba(0,200,100,.5)';
+        document.getElementById('joinStatus').textContent = '✓ Готово!';
         document.getElementById('joinStatus').style.color = '#0f0';
         setTimeout(() => { document.getElementById('onlineMenu').style.display = 'none'; chooseRole(); }, 800);
         conn.on('data', d => {
@@ -246,17 +299,23 @@ document.getElementById('connectBtn').addEventListener('click', () => {
         clearTimeout(timeout);
         document.getElementById('joinStatus').textContent = 'Ошибка соединения';
         document.getElementById('joinStatus').style.color = '#f33';
+        joinStarting = false;
       });
     });
     peer.on('error', err => {
       clearTimeout(timeout);
-      document.getElementById('joinStatus').textContent = 'Ошибка: ' + err.type;
+      document.getElementById('joinStatus').textContent = 'Ошибка: ' + (err.type || err.message || '');
       document.getElementById('joinStatus').style.color = '#f33';
+      joinStarting = false;
     });
-  } catch(e) { console.log(e); }
+  } catch(e) {
+    document.getElementById('joinStatus').textContent = 'КРАШ: ' + e.message;
+    joinStarting = false;
+    console.log(e);
+  }
 });
 
-document.getElementById('offlineBtn').addEventListener('click', () => {
+bindMenuBtn('offlineBtn', () => {
   net.role = 'offline';
   document.getElementById('onlineMenu').style.display = 'none';
   chooseRole();
