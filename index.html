@@ -49,16 +49,17 @@ canvas{display:block}
 #radar{position:fixed;bottom:10px;right:10px;width:120px;height:120px;background:rgba(0,30,0,.7);border:2px solid #0f0;border-radius:50%;z-index:12;pointer-events:none;display:none}
 #onlineMenu{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.95);z-index:200;display:flex;align-items:center;justify-content:center;flex-direction:column;padding:20px;box-sizing:border-box;font-family:monospace;overflow-y:auto}
 #onlineMenu button{display:block;width:85%;max-width:400px;padding:18px;margin:8px 0;font-family:monospace;font-size:16px;font-weight:bold;border-radius:10px;color:#fff;cursor:pointer;touch-action:manipulation}
-#onlineMenu button:active{transform:scale(0.97);opacity:0.8}
 #hostBtn{background:rgba(0,200,100,.3);border:2px solid #0f0}
 #joinBtn{background:rgba(0,150,255,.3);border:2px solid #5eb5f7}
 #offlineBtn{background:rgba(100,100,100,.3);border:2px solid #888;padding:12px!important;font-size:13px!important;margin-top:20px!important}
 #roomInput{width:85%;max-width:400px;padding:14px;background:#000;border:2px solid #0f0;color:#0f0;font-family:monospace;font-size:18px;text-align:center;box-sizing:border-box;border-radius:8px;letter-spacing:3px;margin:10px 0;text-transform:lowercase}
 #roomStatus{color:#ff0;font-size:13px;text-align:center;margin-top:15px;line-height:1.6;max-width:400px}
-.manual-box{width:85%;max-width:400px;margin-top:15px;padding:10px;background:rgba(0,0,0,.5);border:1px dashed #555;border-radius:8px;box-sizing:border-box}
-.manual-box textarea{width:100%;height:80px;background:#111;border:1px solid #444;color:#0f0;font-family:monospace;font-size:10px;box-sizing:border-box;border-radius:4px;resize:none;margin-bottom:8px}
-.manual-box button{width:100%!important;padding:12px!important;font-size:14px!important;background:rgba(255,255,255,.1)!important;border:1px solid #666!important;margin:4px 0!important}
-.manual-box .hint{color:#888;font-size:11px;margin-bottom:8px;line-height:1.4}
+.manual-box{width:85%;max-width:400px;margin-top:15px;padding:12px;background:rgba(0,0,0,.6);border:1px dashed #0f0;border-radius:8px;box-sizing:border-box}
+.manual-box h4{color:#0f0;margin:0 0 10px 0;font-size:13px;text-align:center}
+.manual-box .step{color:#fff;font-size:12px;margin:10px 0 4px 0}
+.manual-box textarea{width:100%;height:70px;background:#111;border:1px solid #444;color:#0f0;font-family:monospace;font-size:10px;box-sizing:border-box;border-radius:4px;resize:none;margin-bottom:6px;word-break:break-all}
+.manual-box button{width:100%!important;padding:12px!important;font-size:14px!important;background:rgba(0,150,255,.25)!important;border:2px solid #5eb5f7!important;margin:4px 0 0 0!important;border-radius:8px!important}
+.manual-box button.green{background:rgba(0,200,100,.25)!important;border:2px solid #0f0!important}
 </style>
 </head>
 <body>
@@ -94,31 +95,21 @@ canvas{display:block}
 <button id="joinBtn">ВОЙТИ КАК ГОСТЬ</button>
 <button id="offlineBtn">ИГРАТЬ ОДНОМУ</button>
 <div id="roomStatus">Введи имя комнаты, потом нажми любую кнопку</div>
-<div id="manualConnect" class="manual-box" style="display:none;">
-  <div class="hint">Автоматическое подключение не удалось. Скопируйте код ниже и отправьте другу в мессенджер.</div>
-  <textarea id="manualOffer" placeholder="Здесь появится ваш код для друга..."></textarea>
-  <button id="copyOfferBtn">📋 КОПИРОВАТЬ МОЙ КОД</button>
-  <div class="hint" style="margin-top:10px;">Вставьте сюда код, который прислал друг:</div>
-  <textarea id="manualAnswer" placeholder="Вставьте код друга здесь..."></textarea>
-  <button id="applyAnswerBtn">🔗 ПОДКЛЮЧИТЬСЯ</button>
-</div>
+<div id="manualBox" class="manual-box" style="display:none;"></div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script type="importmap">
 {
   "imports": {
-    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-    "trystero": "https://cdn.jsdelivr.net/npm/trystero@0.21/+esm",
-    "trystero/mqtt": "https://cdn.jsdelivr.net/npm/trystero@0.21/mqtt/+esm"
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
   }
 }
 </script>
-
 <script type="module">
 import * as THREE from 'three';
-import { joinRoom } from 'trystero/mqtt';
 
-// ===== ДЕТЕРМИНИРОВАННЫЙ ГПСЧ (одинаковый мир у обоих игроков) =====
+// ===== ДЕТЕРМИНИРОВАННЫЙ ГПСЧ =====
 let _seed = 20260406;
 function rnd() {
   _seed |= 0; _seed = _seed + 0x6D2B79F5 | 0;
@@ -128,199 +119,239 @@ function rnd() {
 }
 
 const net = {
-  role: 'offline',
-  room: null,
-  myId: null,
-  remotePlayers: {},
-  bombCounter: 0,
-  seenBids: new Set(),
+  role: 'offline', myId: null, remotePlayers: {},
+  bombCounter: 0, seenBids: new Set(),
   sendState: null, sendDrop: null, sendAI: null, sendBuilding: null,
-  isHost: false, peerFound: false, manualMode: false
+  isHost: false, peer: null, conn: null, manualPC: null
 };
 
-const APP_ID = 'war-game-sums-v3-2026';
-const MQTT_BROKERS = [
-  'wss://broker.emqx.io:8084/mqtt',
-  'wss://test.mosquitto.org:8081/mqtt',
-  'wss://mqtt.eclipseprojects.io:443/mqtt'
-];
-
-// Публичные TURN-серверы (обход NAT)
-const TURN_SERVERS = [
-  { urls: 'turn:turn.evan-brass.net', username: 'evan', credential: 'brass' },
-  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' }
-];
+const PEER_CONFIG = {
+  config: {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:global.stun.twilio.com:3478' },
+      { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+    ]
+  }
+};
 
 function updateStatus(text, color) {
   const st = document.getElementById('roomStatus');
-  st.textContent = text;
+  st.innerHTML = text;
   st.style.color = color || '#ff0';
 }
 
-function showManualBox() {
-  document.getElementById('manualConnect').style.display = 'block';
-  net.manualMode = true;
+// ============ АВТО-РЕЖИМ (PeerJS) ============
+function startPeerJS(roomName, isHost) {
+  net.isHost = isHost;
+  net.myId = isHost ? 'host' : 'guest';
+  net.role = isHost ? 'host' : 'client';
+
+  const myPeerId = 'wgo-' + roomName + '-' + (isHost ? 'h' : 'g');
+  const targetPeerId = 'wgo-' + roomName + '-h';
+
+  updateStatus('⏳ Регистрируюсь на сигнальном сервере...', '#ff0');
+
+  try {
+    net.peer = new Peer(myPeerId, PEER_CONFIG);
+  } catch(e) {
+    updateStatus('✗ Ошибка PeerJS: ' + e.message, '#f33');
+    showManualMode();
+    return;
+  }
+
+  net.peer.on('open', (id) => {
+    if (isHost) {
+      updateStatus('✓ Комната готова. Ждём гостя...', '#0f0');
+    } else {
+      updateStatus('⏳ Соединяюсь с хостом...', '#ff0');
+      const conn = net.peer.connect(targetPeerId, { reliable: true });
+      wireConnection(conn);
+    }
+  });
+
+  if (isHost) {
+    net.peer.on('connection', (conn) => {
+      wireConnection(conn);
+    });
+  }
+
+  net.peer.on('error', (err) => {
+    console.warn('PeerJS error', err);
+    if (err.type === 'unavailable-id') {
+      updateStatus('✗ ID комнаты занят. Измени имя комнаты и попробуй снова.', '#f33');
+    } else if (err.type === 'peer-unavailable') {
+      updateStatus('✗ Хост не найден. Убедись, что у вас одинаковое имя комнаты и хост уже создал её.', '#f33');
+    } else {
+      updateStatus('✗ Ошибка: ' + err.type, '#f33');
+    }
+  });
+
+  // Таймаут 25 сек -> ручной режим
+  setTimeout(() => {
+    if (!net.conn || !net.conn.open) {
+      updateStatus('⚠ Авто не удалось за 25 сек. Открываю ручной режим...', '#fc0');
+      showManualMode();
+    }
+  }, 25000);
+}
+
+function wireConnection(conn) {
+  net.conn = conn;
+  conn.on('open', () => {
+    updateStatus('✓ Друг подключился! Загружаю игру...', '#0f0');
+    net.sendState = (d) => conn.send({t: 's', d});
+    net.sendDrop = (d) => conn.send({t: 'd', d});
+    net.sendAI = (d) => conn.send({t: 'a', d});
+    net.sendBuilding = (d) => conn.send({t: 'b', d});
+    setTimeout(() => {
+      document.getElementById('onlineMenu').style.display = 'none';
+      chooseRole();
+    }, 600);
+  });
+  conn.on('data', (msg) => {
+    if (!msg || !msg.t) return;
+    if (msg.t === 's') updateRemotePlayer('peer', msg.d);
+    else if (msg.t === 'd') {
+      if (net.seenBids.has(msg.d.bid)) return;
+      net.seenBids.add(msg.d.bid);
+      spawnBombFromData(msg.d);
+    }
+    else if (msg.t === 'a') updateRemoteAI(msg.d);
+    else if (msg.t === 'b') updateRemoteBuilding(msg.d);
+  });
+  conn.on('close', () => updateStatus('Друг отключился', '#f33'));
+  conn.on('error', (e) => console.warn('conn err', e));
+}
+
+// ============ РУЧНОЙ РЕЖИМ (SDP-обмен) ============
+function showManualMode() {
+  const box = document.getElementById('manualBox');
+  box.style.display = 'block';
   if (net.isHost) {
-    // Хост создает оффер и показывает
-    createManualOffer();
+    box.innerHTML =
+      '<h4>📡 РУЧНОЙ РЕЖИМ — ВЫ ХОСТ</h4>' +
+      '<div class="step">1. Нажми кнопку, чтобы создать код:</div>' +
+      '<button id="btnMakeOffer" class="green">📝 СОЗДАТЬ МОЙ КОД</button>' +
+      '<div class="step">2. Скопируй код и отправь другу в мессенджер:</div>' +
+      '<textarea id="offerOut" readonly placeholder="Здесь появится твой код..."></textarea>' +
+      '<button id="btnCopyOffer">📋 КОПИРОВАТЬ КОД</button>' +
+      '<div class="step">3. Вставь сюда ответ, который пришлёт друг:</div>' +
+      '<textarea id="answerIn" placeholder="Вставь ответ друга..."></textarea>' +
+      '<button id="btnApplyAnswer" class="green">🔗 ЗАВЕРШИТЬ ПОДКЛЮЧЕНИЕ</button>';
+    document.getElementById('btnMakeOffer').onclick = hostCreateOffer;
+    document.getElementById('btnCopyOffer').onclick = () => copyText('offerOut');
+    document.getElementById('btnApplyAnswer').onclick = hostApplyAnswer;
   } else {
-    // Гость ждет оффер
-    updateStatus('⏳ Ждем код от хоста... Скопируйте его и вставьте в поле ниже.', '#fc0');
+    box.innerHTML =
+      '<h4>📡 РУЧНОЙ РЕЖИМ — ВЫ ГОСТЬ</h4>' +
+      '<div class="step">1. Попроси у друга его код и вставь сюда:</div>' +
+      '<textarea id="offerIn" placeholder="Вставь код хоста..."></textarea>' +
+      '<button id="btnMakeAnswer" class="green">📝 СОЗДАТЬ ОТВЕТ</button>' +
+      '<div class="step">2. Скопируй свой ответ и отправь его хосту:</div>' +
+      '<textarea id="answerOut" readonly placeholder="Здесь появится твой ответ..."></textarea>' +
+      '<button id="btnCopyAnswer">📋 КОПИРОВАТЬ ОТВЕТ</button>' +
+      '<div class="step" style="color:#888;">Подключение произойдёт, когда хост вставит твой ответ.</div>';
+    document.getElementById('btnMakeAnswer').onclick = guestCreateAnswer;
+    document.getElementById('btnCopyAnswer').onclick = () => copyText('answerOut');
   }
 }
 
-async function createManualOffer() {
+function copyText(id) {
+  const ta = document.getElementById(id);
+  ta.select();
+  ta.setSelectionRange(0, 99999);
+  try { document.execCommand('copy'); updateStatus('✅ Скопировано!', '#0f0'); }
+  catch(e) { navigator.clipboard && navigator.clipboard.writeText(ta.value); }
+}
+
+function waitIce(pc) {
+  return new Promise(r => {
+    if (pc.iceGatheringState === 'complete') return r();
+    const check = () => { if (pc.iceGatheringState === 'complete') { pc.removeEventListener('icegatheringstatechange', check); r(); } };
+    pc.addEventListener('icegatheringstatechange', check);
+    setTimeout(r, 4000);
+  });
+}
+
+async function hostCreateOffer() {
   try {
-    const config = { iceServers: TURN_SERVERS.map(s => ({ urls: s.urls, username: s.username, credential: s.credential })) };
-    const pc = new RTCPeerConnection(config);
-    const dc = pc.createDataChannel('game');
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    await new Promise(r => { if (pc.iceGatheringState === 'complete') r(); else pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === 'complete') r(); }; });
-    document.getElementById('manualOffer').value = JSON.stringify(pc.localDescription);
-    updateStatus('✅ Ваш код готов! Скопируйте его и отправьте другу.', '#0f0');
-    net.manualPC = pc;
-    net.manualDC = dc;
+    net.manualPC = new RTCPeerConnection(PEER_CONFIG);
+    const dc = net.manualPC.createDataChannel('game');
+    wireManualChannel(dc);
+    const offer = await net.manualPC.createOffer();
+    await net.manualPC.setLocalDescription(offer);
+    await waitIce(net.manualPC);
+    document.getElementById('offerOut').value = JSON.stringify(net.manualPC.localDescription);
+    updateStatus('✅ Код готов. Скопируй и отправь другу.', '#0f0');
   } catch(e) {
     updateStatus('✗ Ошибка создания кода: ' + e.message, '#f33');
   }
 }
 
-document.getElementById('copyOfferBtn').addEventListener('click', () => {
-  const ta = document.getElementById('manualOffer');
-  ta.select();
-  document.execCommand('copy');
-  updateStatus('✅ Код скопирован! Отправьте его другу.', '#0f0');
-});
-
-document.getElementById('applyAnswerBtn').addEventListener('click', async () => {
-  if (!net.manualPC || !net.manualDC) {
-    updateStatus('✗ Сначала нажмите "СОЗДАТЬ / ВОЙТИ КАК ХОСТ"', '#f33');
-    return;
-  }
+async function hostApplyAnswer() {
   try {
-    const answerSdp = document.getElementById('manualAnswer').value.trim();
-    if (!answerSdp) { updateStatus('✗ Вставьте код друга', '#f33'); return; }
-    await net.manualPC.setRemoteDescription(JSON.parse(answerSdp));
-    updateStatus('⏳ Устанавливаем соединение...', '#ff0');
-    // Ждем открытия канала
-    await new Promise((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error('Таймаут')), 15000);
-      net.manualDC.onopen = () => { clearTimeout(t); resolve(); };
-    });
-    updateStatus('✅ Соединение установлено! Игра начинается...', '#0f0');
-    net.room = { 
-      makeAction: (name) => { 
-        return [(data) => { try { net.manualDC.send(JSON.stringify({action: name, data})); } catch(e) {} }, (cb) => { net.manualDC.onmessage = (e) => { try { const msg = JSON.parse(e.data); if (msg.action === name) cb(msg.data); } catch(err) {} }; }];
-      },
-      onPeerJoin: (cb) => { net.manualDC.onopen = () => cb(); },
-      onPeerLeave: (cb) => { net.manualDC.onclose = () => cb(); }
-    };
-    net.sendState = net.room.makeAction('state')[0];
-    net.sendDrop = net.room.makeAction('drop')[0];
-    net.sendAI = net.room.makeAction('ai')[0];
-    net.sendBuilding = net.room.makeAction('building')[0];
-    setupActionHandlers();
-    net.peerFound = true;
-    setTimeout(() => {
-      document.getElementById('onlineMenu').style.display = 'none';
-      chooseRole();
-    }, 700);
+    const answerStr = document.getElementById('answerIn').value.trim();
+    if (!answerStr) { updateStatus('⚠ Вставь ответ друга!', '#f33'); return; }
+    await net.manualPC.setRemoteDescription(JSON.parse(answerStr));
+    updateStatus('⏳ Устанавливаю соединение...', '#ff0');
   } catch(e) {
     updateStatus('✗ Ошибка: ' + e.message, '#f33');
   }
-});
-
-function setupActionHandlers() {
-  if (!net.room || !net.room.makeAction) return;
-  const room = net.room;
-  const [, getState] = room.makeAction('state');
-  const [, getDrop] = room.makeAction('drop');
-  const [, getAI] = room.makeAction('ai');
-  const [, getBuilding] = room.makeAction('building');
-  getState((data, peerId) => updateRemotePlayer(peerId, data));
-  getDrop((data) => { if (net.seenBids.has(data.bid)) return; net.seenBids.add(data.bid); spawnBombFromData(data); });
-  getAI((data) => updateRemoteAI(data));
-  getBuilding((data) => updateRemoteBuilding(data));
 }
 
-function startNetworking(roomName, isHost) {
-  net.role = isHost ? 'host' : 'client';
-  net.myId = isHost ? 'host' : 'guest';
-  net.isHost = isHost;
-  updateStatus('⏳ Попытка 1/3: Подключаюсь к MQTT...', '#ff0');
-
+async function guestCreateAnswer() {
   try {
-    net.room = joinRoom(
-      { 
-        appId: APP_ID, 
-        password: roomName, 
-        relayUrls: MQTT_BROKERS,
-        turnConfig: TURN_SERVERS,
-        rtcConfig: { iceTransportPolicy: 'all', iceCandidatePoolSize: 10 }
-      },
-      roomName
-    );
+    const offerStr = document.getElementById('offerIn').value.trim();
+    if (!offerStr) { updateStatus('⚠ Вставь код хоста!', '#f33'); return; }
+    net.manualPC = new RTCPeerConnection(PEER_CONFIG);
+    net.manualPC.ondatachannel = (e) => wireManualChannel(e.channel);
+    await net.manualPC.setRemoteDescription(JSON.parse(offerStr));
+    const answer = await net.manualPC.createAnswer();
+    await net.manualPC.setLocalDescription(answer);
+    await waitIce(net.manualPC);
+    document.getElementById('answerOut').value = JSON.stringify(net.manualPC.localDescription);
+    updateStatus('✅ Ответ готов. Скопируй и отправь хосту.', '#0f0');
   } catch(e) {
-    updateStatus('✗ Ошибка конфигурации: ' + e.message, '#f33');
-    return;
+    updateStatus('✗ Ошибка: ' + e.message, '#f33');
   }
+}
 
-  const room = net.room;
-  const [sendState, getState] = room.makeAction('state');
-  const [sendDrop, getDrop] = room.makeAction('drop');
-  const [sendAI, getAI] = room.makeAction('ai');
-  const [sendBuilding, getBuilding] = room.makeAction('building');
-  net.sendState = sendState; net.sendDrop = sendDrop;
-  net.sendAI = sendAI; net.sendBuilding = sendBuilding;
-
-  room.onPeerJoin(() => {
-    net.peerFound = true;
-    updateStatus('✓ Друг подключился! Игра начинается...', '#0f0');
+function wireManualChannel(dc) {
+  dc.onopen = () => {
+    updateStatus('✓ Соединение установлено! Загружаю игру...', '#0f0');
+    net.sendState = (d) => dc.send(JSON.stringify({t: 's', d}));
+    net.sendDrop = (d) => dc.send(JSON.stringify({t: 'd', d}));
+    net.sendAI = (d) => dc.send(JSON.stringify({t: 'a', d}));
+    net.sendBuilding = (d) => dc.send(JSON.stringify({t: 'b', d}));
     setTimeout(() => {
       document.getElementById('onlineMenu').style.display = 'none';
       chooseRole();
-    }, 700);
-  });
-
-  room.onPeerLeave(() => { updateStatus('Друг отключился', '#f33'); });
-
-  getState((data, peerId) => updateRemotePlayer(peerId, data));
-  getDrop((data) => { if (net.seenBids.has(data.bid)) return; net.seenBids.add(data.bid); spawnBombFromData(data); });
-  getAI((data) => updateRemoteAI(data));
-  getBuilding((data) => updateRemoteBuilding(data));
-
-  if (isHost) {
-    updateStatus('✓ Комната создана. Ждём друга...', '#0f0');
-  } else {
-    updateStatus('⏳ Ищу хоста... (до 30 сек)', '#ff0');
-  }
-
-  let waited = 0;
-  const tick = setInterval(() => {
-    if (net.peerFound) { clearInterval(tick); return; }
-    waited += 1;
-    if (waited === 8 && !isHost) updateStatus('⏳ Попытка 2/3: Ещё ищу...', '#ff0');
-    if (waited === 18) updateStatus('⏳ Попытка 3/3: Проблема с NAT. Готовлю ручное подключение...', '#fc0');
-    if (waited === 28) {
-      clearInterval(tick);
-      updateStatus('⚠ Автоматическое подключение не удалось. Используйте ручной режим ниже.', '#f33');
-      showManualBox();
-    }
-  }, 1000);
+    }, 600);
+  };
+  dc.onmessage = (e) => {
+    let msg; try { msg = JSON.parse(e.data); } catch(_) { return; }
+    if (msg.t === 's') updateRemotePlayer('peer', msg.d);
+    else if (msg.t === 'd') { if (net.seenBids.has(msg.d.bid)) return; net.seenBids.add(msg.d.bid); spawnBombFromData(msg.d); }
+    else if (msg.t === 'a') updateRemoteAI(msg.d);
+    else if (msg.t === 'b') updateRemoteBuilding(msg.d);
+  };
 }
 
+// ============ UI-ОБРАБОТЧИКИ ============
 document.getElementById('hostBtn').addEventListener('click', () => {
   const roomName = document.getElementById('roomInput').value.trim().toLowerCase();
   if (!roomName) { updateStatus('Введи имя комнаты', '#f33'); return; }
   document.getElementById('hostBtn').textContent = 'ПОДКЛЮЧЕНИЕ...';
-  startNetworking(roomName, true);
+  startPeerJS(roomName, true);
 });
 document.getElementById('joinBtn').addEventListener('click', () => {
   const roomName = document.getElementById('roomInput').value.trim().toLowerCase();
   if (!roomName) { updateStatus('Введи имя комнаты', '#f33'); return; }
   document.getElementById('joinBtn').textContent = 'ПОДКЛЮЧЕНИЕ...';
-  startNetworking(roomName, false);
+  startPeerJS(roomName, false);
 });
 document.getElementById('offlineBtn').addEventListener('click', () => {
   net.role = 'offline';
@@ -338,9 +369,9 @@ function chooseRole() {
   });
 }
 
-// Отправка своего положения (работает и для MQTT, и для ручного режима)
+// Отправка своего положения
 setInterval(() => {
-  if (!net.sendState || !net.room) return;
+  if (!net.sendState) return;
   let data;
   if (role === 'civilian') data = {name: net.isHost ? 'Хост' : 'Клиент', role: 'civilian', x: groundPlayer.pos.x, y: groundPlayer.pos.y, z: groundPlayer.pos.z, yaw: groundPlayer.yaw};
   else if (plane) data = {name: net.isHost ? 'Хост' : 'Клиент', role: 'pilot', x: plane.pos.x, y: plane.pos.y, z: plane.pos.z, yaw: 0};
@@ -348,6 +379,31 @@ setInterval(() => {
   try { net.sendState(data); } catch(e) {}
 }, 66);
 
+function updateRemotePlayer(id, data) {
+  if (!net.remotePlayers[id]) {
+    const mesh = createRemotePlayerMesh(data.name || 'Игрок', data.role || 'pilot');
+    scene.add(mesh);
+    net.remotePlayers[id] = {mesh, targetPos: new THREE.Vector3(), targetYaw: 0};
+  }
+  const rp = net.remotePlayers[id];
+  rp.targetPos.set(data.x, data.y - 1.7, data.z);
+  rp.targetYaw = data.yaw || 0;
+}
+function createRemotePlayerMesh(name, role) {
+  const g = new THREE.Group();
+  const color = role === 'civilian' ? 0x4488ff : 0xff4444;
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.4, 1.0, 4, 8), new THREE.MeshLambertMaterial({color}));
+  body.position.y = 1; g.add(body);
+  const canvas = document.createElement('canvas');
+  canvas.width = 256; canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0, 0, 256, 64);
+  ctx.fillStyle = '#0f0'; ctx.font = 'bold 28px monospace'; ctx.textAlign = 'center';
+  ctx.fillText(name, 128, 42);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({map: new THREE.CanvasTexture(canvas), depthTest: false}));
+  sprite.scale.set(4, 1, 1); sprite.position.y = 3; g.add(sprite);
+  return g;
+}
 function updateRemoteAI(data) {
   if (!aiPlane) {
     const m = buildPlane(AIRCRAFT.su34, 0x5a3a3a);
@@ -366,33 +422,8 @@ function updateRemoteBuilding(data) {
   b.hp = data.hp;
   if (b.hp <= 0) destroyBuilding(b, new THREE.Vector3(data.x, 0, data.z), true);
 }
-function createRemotePlayerMesh(name, role) {
-  const g = new THREE.Group();
-  const color = role === 'civilian' ? 0x4488ff : 0xff4444;
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.4, 1.0, 4, 8), new THREE.MeshLambertMaterial({color}));
-  body.position.y = 1; g.add(body);
-  const canvas = document.createElement('canvas');
-  canvas.width = 256; canvas.height = 64;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0, 0, 256, 64);
-  ctx.fillStyle = '#0f0'; ctx.font = 'bold 28px monospace'; ctx.textAlign = 'center';
-  ctx.fillText(name, 128, 42);
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({map: new THREE.CanvasTexture(canvas), depthTest: false}));
-  sprite.scale.set(4, 1, 1); sprite.position.y = 3; g.add(sprite);
-  return g;
-}
-function updateRemotePlayer(id, data) {
-  if (!net.remotePlayers[id]) {
-    const mesh = createRemotePlayerMesh(data.name || 'Игрок', data.role || 'pilot');
-    scene.add(mesh);
-    net.remotePlayers[id] = {mesh, targetPos: new THREE.Vector3(), targetYaw: 0};
-  }
-  const rp = net.remotePlayers[id];
-  rp.targetPos.set(data.x, data.y - 1.7, data.z);
-  rp.targetYaw = data.yaw || 0;
-}
 
-// ===== ОСНОВНАЯ ИГРА (без изменений) =====
+// ===== ОСНОВНАЯ ИГРА =====
 const AIRCRAFT = {
 su34:{name:'СУ-34',maxSpeed:220,minSpeed:45,accel:55,turnPitch:0.9,turnRoll:1.5,turnYaw:0.7,hp:100,maxBombs:8,color:0x4a5a4a,dark:0x22331a,size:1,bankTurn:0.9},
 su35:{name:'СУ-35С',maxSpeed:320,minSpeed:60,accel:85,turnPitch:1.1,turnRoll:1.9,turnYaw:0.85,hp:80,maxBombs:6,color:0x5a6a7a,dark:0x2a3340,size:.95,bankTurn:1.2},
@@ -789,7 +820,7 @@ function startGame(planeType) {
   document.getElementById('maxBombs').textContent = planeConfig.maxBombs;
   document.getElementById('msg').style.display = 'none';
   initAudio(); updateHUD();
-  if (net.role === 'host') spawnAIPlane();
+  if (net.isHost) spawnAIPlane();
 }
 function startCivilian() {
   if (started) return;
@@ -807,7 +838,7 @@ function startCivilian() {
   document.getElementById('modeTag').textContent = 'ПЕШИЙ РЕЖИМ · ЖИТЕЛЬ';
   document.getElementById('radar').style.display = 'block';
   initAudio();
-  if (net.role === 'host') setTimeout(() => spawnAIPlane(), 5000);
+  if (net.isHost) setTimeout(() => spawnAIPlane(), 5000);
 }
 function spawnAIPlane() {
   if (aiPlane) return;
@@ -928,8 +959,9 @@ function dropBomb() {
   const vel = fwd.clone().multiplyScalar(plane.speed);
   const bid = (net.myId || 'loc') + '_' + (net.bombCounter++);
   net.seenBids.add(bid);
-  if (net.sendDrop) { try { net.sendDrop({bid, btype: currentBombType, x: pos.x, y: pos.y, z: pos.z, vx: vel.x, vy: vel.y, vz: vel.z}); } catch(e) {} }
-  spawnBombFromData({bid, btype: currentBombType, x: pos.x, y: pos.y, z: pos.z, vx: vel.x, vy: vel.y, vz: vel.z, owner: 'me'});
+  const pkt = {bid, btype: currentBombType, x: pos.x, y: pos.y, z: pos.z, vx: vel.x, vy: vel.y, vz: vel.z};
+  if (net.sendDrop) { try { net.sendDrop(pkt); } catch(e) {} }
+  spawnBombFromData({...pkt, owner: 'me'});
   updateHUD();
 }
 function spawnBombFromData(d) {
@@ -1179,7 +1211,7 @@ function animate() {
     camera.position.set(Math.cos(t)*150, 80, Math.sin(t)*150);
     camera.lookAt(0,20,0);
   }
-  if (net.role === 'host' && aiPlane) updateAIPlane(dt);
+  if (net.isHost && aiPlane) updateAIPlane(dt);
   for (const id in net.remotePlayers) {
     const rp = net.remotePlayers[id];
     rp.mesh.position.lerp(rp.targetPos, 0.15);
