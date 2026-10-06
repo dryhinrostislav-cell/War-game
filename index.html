@@ -54,7 +54,7 @@ canvas{display:block}
 #joinBtn{background:rgba(0,150,255,.3);border:2px solid #5eb5f7}
 #offlineBtn{background:rgba(100,100,100,.3);border:2px solid #888;padding:12px!important;font-size:13px!important;margin-top:20px!important}
 #roomInput{width:85%;max-width:400px;padding:14px;background:#000;border:2px solid #0f0;color:#0f0;font-family:monospace;font-size:18px;text-align:center;box-sizing:border-box;border-radius:8px;letter-spacing:3px;margin:10px 0;text-transform:lowercase}
-#roomStatus{color:#ff0;font-size:13px;text-align:center;margin-top:15px;line-height:1.6}
+#roomStatus{color:#ff0;font-size:13px;text-align:center;margin-top:15px;line-height:1.6;max-width:400px}
 </style>
 </head>
 <body>
@@ -97,14 +97,14 @@ canvas{display:block}
   "imports": {
     "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
     "trystero": "https://cdn.jsdelivr.net/npm/trystero@0.21/+esm",
-    "trystero/nostr": "https://cdn.jsdelivr.net/npm/trystero@0.21/nostr/+esm"
+    "trystero/mqtt": "https://cdn.jsdelivr.net/npm/trystero@0.21/mqtt/+esm"
   }
 }
 </script>
 
 <script type="module">
 import * as THREE from 'three';
-import { joinRoom } from 'trystero/nostr';
+import { joinRoom } from 'trystero/mqtt';
 
 // ===== ДЕТЕРМИНИРОВАННЫЙ ГПСЧ (одинаковый мир у обоих игроков) =====
 let _seed = 20260406;
@@ -125,38 +125,54 @@ const net = {
   sendState: null, sendDrop: null, sendAI: null, sendBuilding: null
 };
 
-const APP_ID = 'war-game-sums-v1-2026';
+const APP_ID = 'war-game-sums-v2-2026';
+const MQTT_BROKERS = [
+  'wss://broker.emqx.io:8084/mqtt',
+  'wss://test.mosquitto.org:8081/mqtt',
+  'wss://mqtt.eclipseprojects.io:443/mqtt'
+];
 
 function startNetworking(roomName, isHost) {
   net.role = isHost ? 'host' : 'client';
+  net.myId = isHost ? 'host' : 'guest';
+  const st = document.getElementById('roomStatus');
+  st.style.color = '#ff0';
+  st.textContent = '⏳ Связываюсь с сигнальным сервером...';
+
   try {
-    net.room = joinRoom({appId: APP_ID}, roomName);
+    net.room = joinRoom(
+      { appId: APP_ID, password: roomName, relayUrls: MQTT_BROKERS },
+      roomName
+    );
   } catch(e) {
-    const st = document.getElementById('roomStatus');
-    st.textContent = 'Ошибка сети: ' + e.message; st.style.color = '#f33';
+    st.textContent = '✗ Ошибка: ' + e.message;
+    st.style.color = '#f33';
     return;
   }
-  const room = net.room;
-  net.myId = isHost ? 'host' : 'guest';
 
+  const room = net.room;
   const [sendState, getState] = room.makeAction('state');
   const [sendDrop, getDrop] = room.makeAction('drop');
   const [sendAI, getAI] = room.makeAction('ai');
   const [sendBuilding, getBuilding] = room.makeAction('building');
+  net.sendState = sendState; net.sendDrop = sendDrop;
+  net.sendAI = sendAI; net.sendBuilding = sendBuilding;
 
-  net.sendState = sendState; net.sendDrop = sendDrop; net.sendAI = sendAI; net.sendBuilding = sendBuilding;
+  let peerFound = false;
 
   room.onPeerJoin(() => {
-    const st = document.getElementById('roomStatus');
-    st.textContent = '✓ Друг подключился!'; st.style.color = '#0f0';
+    peerFound = true;
+    st.textContent = '✓ Друг подключился!';
+    st.style.color = '#0f0';
     setTimeout(() => {
       document.getElementById('onlineMenu').style.display = 'none';
       chooseRole();
-    }, 800);
+    }, 700);
   });
+
   room.onPeerLeave(() => {
-    const st = document.getElementById('roomStatus');
-    st.textContent = 'Друг отключился'; st.style.color = '#f33';
+    st.textContent = 'Друг отключился';
+    st.style.color = '#f33';
   });
 
   getState((data, peerId) => updateRemotePlayer(peerId, data));
@@ -168,8 +184,32 @@ function startNetworking(roomName, isHost) {
   getAI((data) => updateRemoteAI(data));
   getBuilding((data) => updateRemoteBuilding(data));
 
-  const st = document.getElementById('roomStatus');
-  st.textContent = '✓ Комната создана. Ждём друга...'; st.style.color = '#0f0';
+  if (isHost) {
+    st.textContent = '✓ Комната создана. Ждём друга...';
+    st.style.color = '#0f0';
+  } else {
+    st.textContent = '⏳ Ищу хоста в комнате... (до 30 сек)';
+  }
+
+  let waited = 0;
+  const tick = setInterval(() => {
+    if (peerFound) { clearInterval(tick); return; }
+    waited += 1;
+    if (waited === 5 && !isHost) st.textContent = '⏳ Ещё ищу... проверь, что имя комнаты точно совпадает';
+    if (waited === 15) st.textContent = '⏳ Долго не отвечает. Один на Wi-Fi, другой на мобильном — так бывает медленнее';
+    if (waited === 30) {
+      st.innerHTML = '✗ Не получилось подключиться за 30 сек.<br><br>' +
+        '<span style="color:#fff">Проверьте:</span><br>' +
+        '1. Одинаковое имя комнаты (буква в букву)<br>' +
+        '2. Оба в интернете (Wi-Fi или моб.)<br>' +
+        '3. Закройте вкладку и откройте заново у обоих<br><br>' +
+        '<button id="retryBtn" style="background:rgba(0,150,255,.3);border:2px solid #5eb5f7;color:#fff;padding:10px 16px;border-radius:8px;font-family:monospace;font-size:14px;cursor:pointer;">ПОПРОБОВАТЬ СНОВА</button>';
+      st.style.color = '#f33';
+      const rb = document.getElementById('retryBtn');
+      if (rb) rb.onclick = () => location.reload();
+      clearInterval(tick);
+    }
+  }, 1000);
 }
 
 function createRemotePlayerMesh(name, role) {
@@ -550,7 +590,7 @@ const bombs = [], explosions = [], aaShells = [], contrails = [];
 let bombCount = 0, hits = 0, lastBomb = null, viewMode = 0, throttleInput = 0, currentBombType = 'fab';
 let playerHP = 100, playerMaxHP = 100, started = false, gameOver = false;
 let role = 'pilot';
-let hasTakenOff = false, braking = false, mode = 'plane';
+let braking = false, mode = 'plane';
 const groundPlayer = {pos: new THREE.Vector3(0, 1.7, 0), yaw: 0, pitch: 0, speed: 16, vy: 0};
 const smoothMove = {x: 0, y: 0}, smoothLook = {x: 0, y: 0};
 const rearm = {active: false, timer: 0, cooldown: 0};
@@ -641,7 +681,6 @@ bindBtn('rearmBtn', () => startRearm());
 bindBtn('exitBtn', () => toggleExit());
 bindBtn('brakeBtn', () => braking = true, () => braking = false);
 
-// Клик работает и на мобиле, и на ПК
 document.querySelectorAll('.bombSel .bs').forEach(el => {
   el.addEventListener('click', e => {
     e.preventDefault(); e.stopPropagation();
@@ -980,7 +1019,7 @@ function destroyBuilding(b, impactPos, fromRemote) {
     explosions.push({mesh: dust, kind: 'smoke', life: 0, maxLife: 6, vel: new THREE.Vector3((Math.random()-.5)*12, Math.random()*10+1, (Math.random()-.5)*12)});
   }
   hits++; updateHUD();
-  // Только хост рассылает событие (чтобы не зациклить).
+  // Только хост рассылает событие
   if (!fromRemote && net.role === 'host' && net.sendBuilding) {
     try { net.sendBuilding({x: b.x, z: b.z, hp: 0}); } catch(e) {}
   }
@@ -1081,7 +1120,6 @@ function updatePlane(dt) {
   const cfg = plane.config;
   const onRunway = Math.abs(plane.pos.x - airfield.x) < airfield.w/2 + 10 && Math.abs(plane.pos.z - airfield.z) < airfield.len/2 + 20;
 
-  // Торможение только когда самолёт на земле
   if (braking && plane.onGround) plane.speed = Math.max(0, plane.speed - 40 * dt);
   else if (throttleInput !== 0) plane.speed += throttleInput*cfg.accel*dt;
   else if (plane.onGround) plane.speed = Math.max(0, plane.speed - 5 * dt);
@@ -1106,7 +1144,6 @@ function updatePlane(dt) {
   const fwd = new THREE.Vector3(0,0,-1).applyQuaternion(plane.quat);
   plane.pos.addScaledVector(fwd, plane.speed*dt);
 
-  // Минимальная высота: полоса = 1.6, вне полосы = 8
   const minAlt = onRunway ? 1.6 : 8;
   plane.onGround = plane.pos.y <= minAlt + 0.6;
   if (plane.pos.y < minAlt) {
@@ -1120,7 +1157,6 @@ function updatePlane(dt) {
   planeMesh.position.copy(plane.pos); planeMesh.quaternion.copy(plane.quat);
   skyMesh.position.copy(plane.pos);
 
-  // Кнопки посадки/тормоза — на полосе и медленно
   if (onRunway && plane.onGround && plane.speed < 40) {
     document.getElementById('exitBtn').style.display = 'flex';
     document.getElementById('brakeBtn').style.display = 'flex';
@@ -1129,12 +1165,10 @@ function updatePlane(dt) {
     document.getElementById('brakeBtn').style.display = 'none';
   }
 
-  // Подсказка о посадке
   const hint = document.getElementById('landHint');
   if (!plane.onGround && plane.speed < 90 && plane.pos.y < 150 && !onRunway) hint.style.display = 'block';
   else hint.style.display = 'none';
 
-  // Камера
   if (viewMode === 0) {
     const off = new THREE.Vector3(0,7,28).applyQuaternion(plane.quat);
     camera.position.lerp(plane.pos.clone().add(off), .12);
@@ -1185,7 +1219,6 @@ function updateHUD() {
   document.getElementById('hpFill').style.width = p+'%';
 }
 
-// Проверка смерти
 function checkDeath() {
   if (gameOver) return;
   if (role !== 'pilot') return;
@@ -1229,4 +1262,4 @@ function animate() {
 animate();
 </script>
 </body>
-  </html>
+</html>
