@@ -55,6 +55,10 @@ canvas{display:block}
 #offlineBtn{background:rgba(100,100,100,.3);border:2px solid #888;padding:12px!important;font-size:13px!important;margin-top:20px!important}
 #roomInput{width:85%;max-width:400px;padding:14px;background:#000;border:2px solid #0f0;color:#0f0;font-family:monospace;font-size:18px;text-align:center;box-sizing:border-box;border-radius:8px;letter-spacing:3px;margin:10px 0;text-transform:lowercase}
 #roomStatus{color:#ff0;font-size:13px;text-align:center;margin-top:15px;line-height:1.6;max-width:400px}
+.manual-box{width:85%;max-width:400px;margin-top:15px;padding:10px;background:rgba(0,0,0,.5);border:1px dashed #555;border-radius:8px;box-sizing:border-box}
+.manual-box textarea{width:100%;height:80px;background:#111;border:1px solid #444;color:#0f0;font-family:monospace;font-size:10px;box-sizing:border-box;border-radius:4px;resize:none;margin-bottom:8px}
+.manual-box button{width:100%!important;padding:12px!important;font-size:14px!important;background:rgba(255,255,255,.1)!important;border:1px solid #666!important;margin:4px 0!important}
+.manual-box .hint{color:#888;font-size:11px;margin-bottom:8px;line-height:1.4}
 </style>
 </head>
 <body>
@@ -90,6 +94,14 @@ canvas{display:block}
 <button id="joinBtn">ВОЙТИ КАК ГОСТЬ</button>
 <button id="offlineBtn">ИГРАТЬ ОДНОМУ</button>
 <div id="roomStatus">Введи имя комнаты, потом нажми любую кнопку</div>
+<div id="manualConnect" class="manual-box" style="display:none;">
+  <div class="hint">Автоматическое подключение не удалось. Скопируйте код ниже и отправьте другу в мессенджер.</div>
+  <textarea id="manualOffer" placeholder="Здесь появится ваш код для друга..."></textarea>
+  <button id="copyOfferBtn">📋 КОПИРОВАТЬ МОЙ КОД</button>
+  <div class="hint" style="margin-top:10px;">Вставьте сюда код, который прислал друг:</div>
+  <textarea id="manualAnswer" placeholder="Вставьте код друга здесь..."></textarea>
+  <button id="applyAnswerBtn">🔗 ПОДКЛЮЧИТЬСЯ</button>
+</div>
 </div>
 
 <script type="importmap">
@@ -122,31 +134,135 @@ const net = {
   remotePlayers: {},
   bombCounter: 0,
   seenBids: new Set(),
-  sendState: null, sendDrop: null, sendAI: null, sendBuilding: null
+  sendState: null, sendDrop: null, sendAI: null, sendBuilding: null,
+  isHost: false, peerFound: false, manualMode: false
 };
 
-const APP_ID = 'war-game-sums-v2-2026';
+const APP_ID = 'war-game-sums-v3-2026';
 const MQTT_BROKERS = [
   'wss://broker.emqx.io:8084/mqtt',
   'wss://test.mosquitto.org:8081/mqtt',
   'wss://mqtt.eclipseprojects.io:443/mqtt'
 ];
 
+// Публичные TURN-серверы (обход NAT)
+const TURN_SERVERS = [
+  { urls: 'turn:turn.evan-brass.net', username: 'evan', credential: 'brass' },
+  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' }
+];
+
+function updateStatus(text, color) {
+  const st = document.getElementById('roomStatus');
+  st.textContent = text;
+  st.style.color = color || '#ff0';
+}
+
+function showManualBox() {
+  document.getElementById('manualConnect').style.display = 'block';
+  net.manualMode = true;
+  if (net.isHost) {
+    // Хост создает оффер и показывает
+    createManualOffer();
+  } else {
+    // Гость ждет оффер
+    updateStatus('⏳ Ждем код от хоста... Скопируйте его и вставьте в поле ниже.', '#fc0');
+  }
+}
+
+async function createManualOffer() {
+  try {
+    const config = { iceServers: TURN_SERVERS.map(s => ({ urls: s.urls, username: s.username, credential: s.credential })) };
+    const pc = new RTCPeerConnection(config);
+    const dc = pc.createDataChannel('game');
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await new Promise(r => { if (pc.iceGatheringState === 'complete') r(); else pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === 'complete') r(); }; });
+    document.getElementById('manualOffer').value = JSON.stringify(pc.localDescription);
+    updateStatus('✅ Ваш код готов! Скопируйте его и отправьте другу.', '#0f0');
+    net.manualPC = pc;
+    net.manualDC = dc;
+  } catch(e) {
+    updateStatus('✗ Ошибка создания кода: ' + e.message, '#f33');
+  }
+}
+
+document.getElementById('copyOfferBtn').addEventListener('click', () => {
+  const ta = document.getElementById('manualOffer');
+  ta.select();
+  document.execCommand('copy');
+  updateStatus('✅ Код скопирован! Отправьте его другу.', '#0f0');
+});
+
+document.getElementById('applyAnswerBtn').addEventListener('click', async () => {
+  if (!net.manualPC || !net.manualDC) {
+    updateStatus('✗ Сначала нажмите "СОЗДАТЬ / ВОЙТИ КАК ХОСТ"', '#f33');
+    return;
+  }
+  try {
+    const answerSdp = document.getElementById('manualAnswer').value.trim();
+    if (!answerSdp) { updateStatus('✗ Вставьте код друга', '#f33'); return; }
+    await net.manualPC.setRemoteDescription(JSON.parse(answerSdp));
+    updateStatus('⏳ Устанавливаем соединение...', '#ff0');
+    // Ждем открытия канала
+    await new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('Таймаут')), 15000);
+      net.manualDC.onopen = () => { clearTimeout(t); resolve(); };
+    });
+    updateStatus('✅ Соединение установлено! Игра начинается...', '#0f0');
+    net.room = { 
+      makeAction: (name) => { 
+        return [(data) => { try { net.manualDC.send(JSON.stringify({action: name, data})); } catch(e) {} }, (cb) => { net.manualDC.onmessage = (e) => { try { const msg = JSON.parse(e.data); if (msg.action === name) cb(msg.data); } catch(err) {} }; }];
+      },
+      onPeerJoin: (cb) => { net.manualDC.onopen = () => cb(); },
+      onPeerLeave: (cb) => { net.manualDC.onclose = () => cb(); }
+    };
+    net.sendState = net.room.makeAction('state')[0];
+    net.sendDrop = net.room.makeAction('drop')[0];
+    net.sendAI = net.room.makeAction('ai')[0];
+    net.sendBuilding = net.room.makeAction('building')[0];
+    setupActionHandlers();
+    net.peerFound = true;
+    setTimeout(() => {
+      document.getElementById('onlineMenu').style.display = 'none';
+      chooseRole();
+    }, 700);
+  } catch(e) {
+    updateStatus('✗ Ошибка: ' + e.message, '#f33');
+  }
+});
+
+function setupActionHandlers() {
+  if (!net.room || !net.room.makeAction) return;
+  const room = net.room;
+  const [, getState] = room.makeAction('state');
+  const [, getDrop] = room.makeAction('drop');
+  const [, getAI] = room.makeAction('ai');
+  const [, getBuilding] = room.makeAction('building');
+  getState((data, peerId) => updateRemotePlayer(peerId, data));
+  getDrop((data) => { if (net.seenBids.has(data.bid)) return; net.seenBids.add(data.bid); spawnBombFromData(data); });
+  getAI((data) => updateRemoteAI(data));
+  getBuilding((data) => updateRemoteBuilding(data));
+}
+
 function startNetworking(roomName, isHost) {
   net.role = isHost ? 'host' : 'client';
   net.myId = isHost ? 'host' : 'guest';
-  const st = document.getElementById('roomStatus');
-  st.style.color = '#ff0';
-  st.textContent = '⏳ Связываюсь с сигнальным сервером...';
+  net.isHost = isHost;
+  updateStatus('⏳ Попытка 1/3: Подключаюсь к MQTT...', '#ff0');
 
   try {
     net.room = joinRoom(
-      { appId: APP_ID, password: roomName, relayUrls: MQTT_BROKERS },
+      { 
+        appId: APP_ID, 
+        password: roomName, 
+        relayUrls: MQTT_BROKERS,
+        turnConfig: TURN_SERVERS,
+        rtcConfig: { iceTransportPolicy: 'all', iceCandidatePoolSize: 10 }
+      },
       roomName
     );
   } catch(e) {
-    st.textContent = '✗ Ошибка: ' + e.message;
-    st.style.color = '#f33';
+    updateStatus('✗ Ошибка конфигурации: ' + e.message, '#f33');
     return;
   }
 
@@ -158,67 +274,102 @@ function startNetworking(roomName, isHost) {
   net.sendState = sendState; net.sendDrop = sendDrop;
   net.sendAI = sendAI; net.sendBuilding = sendBuilding;
 
-  let peerFound = false;
-
   room.onPeerJoin(() => {
-    peerFound = true;
-    st.textContent = '✓ Друг подключился!';
-    st.style.color = '#0f0';
+    net.peerFound = true;
+    updateStatus('✓ Друг подключился! Игра начинается...', '#0f0');
     setTimeout(() => {
       document.getElementById('onlineMenu').style.display = 'none';
       chooseRole();
     }, 700);
   });
 
-  room.onPeerLeave(() => {
-    st.textContent = 'Друг отключился';
-    st.style.color = '#f33';
-  });
+  room.onPeerLeave(() => { updateStatus('Друг отключился', '#f33'); });
 
   getState((data, peerId) => updateRemotePlayer(peerId, data));
-  getDrop((data) => {
-    if (net.seenBids.has(data.bid)) return;
-    net.seenBids.add(data.bid);
-    spawnBombFromData(data);
-  });
+  getDrop((data) => { if (net.seenBids.has(data.bid)) return; net.seenBids.add(data.bid); spawnBombFromData(data); });
   getAI((data) => updateRemoteAI(data));
   getBuilding((data) => updateRemoteBuilding(data));
 
   if (isHost) {
-    st.textContent = '✓ Комната создана. Ждём друга...';
-    st.style.color = '#0f0';
+    updateStatus('✓ Комната создана. Ждём друга...', '#0f0');
   } else {
-    st.textContent = '⏳ Ищу хоста в комнате... (до 30 сек)';
+    updateStatus('⏳ Ищу хоста... (до 30 сек)', '#ff0');
   }
 
   let waited = 0;
   const tick = setInterval(() => {
-    if (peerFound) { clearInterval(tick); return; }
+    if (net.peerFound) { clearInterval(tick); return; }
     waited += 1;
-    if (waited === 5 && !isHost) st.textContent = '⏳ Ещё ищу... проверь, что имя комнаты точно совпадает';
-    if (waited === 15) st.textContent = '⏳ Долго не отвечает. Один на Wi-Fi, другой на мобильном — так бывает медленнее';
-    if (waited === 30) {
-      st.innerHTML = '✗ Не получилось подключиться за 30 сек.<br><br>' +
-        '<span style="color:#fff">Проверьте:</span><br>' +
-        '1. Одинаковое имя комнаты (буква в букву)<br>' +
-        '2. Оба в интернете (Wi-Fi или моб.)<br>' +
-        '3. Закройте вкладку и откройте заново у обоих<br><br>' +
-        '<button id="retryBtn" style="background:rgba(0,150,255,.3);border:2px solid #5eb5f7;color:#fff;padding:10px 16px;border-radius:8px;font-family:monospace;font-size:14px;cursor:pointer;">ПОПРОБОВАТЬ СНОВА</button>';
-      st.style.color = '#f33';
-      const rb = document.getElementById('retryBtn');
-      if (rb) rb.onclick = () => location.reload();
+    if (waited === 8 && !isHost) updateStatus('⏳ Попытка 2/3: Ещё ищу...', '#ff0');
+    if (waited === 18) updateStatus('⏳ Попытка 3/3: Проблема с NAT. Готовлю ручное подключение...', '#fc0');
+    if (waited === 28) {
       clearInterval(tick);
+      updateStatus('⚠ Автоматическое подключение не удалось. Используйте ручной режим ниже.', '#f33');
+      showManualBox();
     }
   }, 1000);
 }
 
+document.getElementById('hostBtn').addEventListener('click', () => {
+  const roomName = document.getElementById('roomInput').value.trim().toLowerCase();
+  if (!roomName) { updateStatus('Введи имя комнаты', '#f33'); return; }
+  document.getElementById('hostBtn').textContent = 'ПОДКЛЮЧЕНИЕ...';
+  startNetworking(roomName, true);
+});
+document.getElementById('joinBtn').addEventListener('click', () => {
+  const roomName = document.getElementById('roomInput').value.trim().toLowerCase();
+  if (!roomName) { updateStatus('Введи имя комнаты', '#f33'); return; }
+  document.getElementById('joinBtn').textContent = 'ПОДКЛЮЧЕНИЕ...';
+  startNetworking(roomName, false);
+});
+document.getElementById('offlineBtn').addEventListener('click', () => {
+  net.role = 'offline';
+  document.getElementById('onlineMenu').style.display = 'none';
+  chooseRole();
+});
+
+function chooseRole() {
+  document.getElementById('msg').innerHTML = '<h3>ВЫБЕРИ РОЛЬ</h3>' +
+    '<button class="role-opt" data-role="pilot"><b>✈ ПИЛОТ</b><small>Летаешь, бомбишь цели</small></button>' +
+    '<button class="role-opt" data-role="civilian"><b>🏚 ЖИТЕЛЬ</b><small>Ходишь по городу</small></button>';
+  document.getElementById('msg').style.display = 'block';
+  document.querySelectorAll('.role-opt').forEach(el => {
+    el.onclick = () => { role = el.dataset.role; if (role === 'pilot') showPlaneMenu(); else startCivilian(); };
+  });
+}
+
+// Отправка своего положения (работает и для MQTT, и для ручного режима)
+setInterval(() => {
+  if (!net.sendState || !net.room) return;
+  let data;
+  if (role === 'civilian') data = {name: net.isHost ? 'Хост' : 'Клиент', role: 'civilian', x: groundPlayer.pos.x, y: groundPlayer.pos.y, z: groundPlayer.pos.z, yaw: groundPlayer.yaw};
+  else if (plane) data = {name: net.isHost ? 'Хост' : 'Клиент', role: 'pilot', x: plane.pos.x, y: plane.pos.y, z: plane.pos.z, yaw: 0};
+  else return;
+  try { net.sendState(data); } catch(e) {}
+}, 66);
+
+function updateRemoteAI(data) {
+  if (!aiPlane) {
+    const m = buildPlane(AIRCRAFT.su34, 0x5a3a3a);
+    scene.add(m);
+    aiPlane = {mesh: m, pos: new THREE.Vector3(), quat: new THREE.Quaternion(), yaw: 0, speed: 0, state: 'attack', bombsLeft: 8};
+  }
+  aiPlane.pos.set(data.x, data.y, data.z);
+  aiPlane.yaw = data.yaw;
+  aiPlane.mesh.position.copy(aiPlane.pos);
+  aiPlane.mesh.rotation.y = aiPlane.yaw;
+  aiPlane.quat.setFromEuler(new THREE.Euler(0, aiPlane.yaw, 0));
+}
+function updateRemoteBuilding(data) {
+  const b = buildings.find(b => Math.abs(b.x - data.x) < 0.5 && Math.abs(b.z - data.z) < 0.5);
+  if (!b || b.destroyed) return;
+  b.hp = data.hp;
+  if (b.hp <= 0) destroyBuilding(b, new THREE.Vector3(data.x, 0, data.z), true);
+}
 function createRemotePlayerMesh(name, role) {
   const g = new THREE.Group();
   const color = role === 'civilian' ? 0x4488ff : 0xff4444;
-  const body = new THREE.Mesh(
-    new THREE.CapsuleGeometry(0.4, 1.0, 4, 8),
-    new THREE.MeshLambertMaterial({color})
-  );
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.4, 1.0, 4, 8), new THREE.MeshLambertMaterial({color}));
   body.position.y = 1; g.add(body);
   const canvas = document.createElement('canvas');
   canvas.width = 256; canvas.height = 64;
@@ -241,76 +392,11 @@ function updateRemotePlayer(id, data) {
   rp.targetYaw = data.yaw || 0;
 }
 
-document.getElementById('hostBtn').addEventListener('click', () => {
-  const roomName = document.getElementById('roomInput').value.trim().toLowerCase();
-  if (!roomName) { document.getElementById('roomStatus').textContent = 'Введи имя комнаты'; return; }
-  document.getElementById('hostBtn').textContent = 'ПОДКЛЮЧЕНИЕ...';
-  startNetworking(roomName, true);
-});
-document.getElementById('joinBtn').addEventListener('click', () => {
-  const roomName = document.getElementById('roomInput').value.trim().toLowerCase();
-  if (!roomName) { document.getElementById('roomStatus').textContent = 'Введи имя комнаты'; return; }
-  document.getElementById('joinBtn').textContent = 'ПОДКЛЮЧЕНИЕ...';
-  startNetworking(roomName, false);
-});
-document.getElementById('offlineBtn').addEventListener('click', () => {
-  net.role = 'offline';
-  document.getElementById('onlineMenu').style.display = 'none';
-  chooseRole();
-});
-
-function chooseRole() {
-  document.getElementById('msg').innerHTML = '<h3>ВЫБЕРИ РОЛЬ</h3>' +
-    '<button class="role-opt" data-role="pilot"><b>✈ ПИЛОТ</b><small>Летаешь, бомбишь цели</small></button>' +
-    '<button class="role-opt" data-role="civilian"><b>🏚 ЖИТЕЛЬ</b><small>Ходишь по городу</small></button>';
-  document.getElementById('msg').style.display = 'block';
-  document.querySelectorAll('.role-opt').forEach(el => {
-    el.onclick = () => {
-      role = el.dataset.role;
-      if (role === 'pilot') showPlaneMenu(); else startCivilian();
-    };
-  });
-}
-
-// Отправка своего положения
-setInterval(() => {
-  if (!net.sendState || !net.room) return;
-  let data;
-  if (role === 'civilian') data = {name: net.role === 'host' ? 'Хост' : 'Клиент', role: 'civilian', x: groundPlayer.pos.x, y: groundPlayer.pos.y, z: groundPlayer.pos.z, yaw: groundPlayer.yaw};
-  else if (plane) data = {name: net.role === 'host' ? 'Хост' : 'Клиент', role: 'pilot', x: plane.pos.x, y: plane.pos.y, z: plane.pos.z, yaw: 0};
-  else return;
-  try { net.sendState(data); } catch(e) {}
-}, 66);
-
-// Гость: создаём меш ИИ-самолёта лениво, когда прилетит первое обновление
-function updateRemoteAI(data) {
-  if (!aiPlane) {
-    const m = buildPlane(AIRCRAFT.su34, 0x5a3a3a);
-    scene.add(m);
-    aiPlane = {mesh: m, pos: new THREE.Vector3(), quat: new THREE.Quaternion(), yaw: 0, speed: 0, state: 'attack', bombsLeft: 8};
-  }
-  aiPlane.pos.set(data.x, data.y, data.z);
-  aiPlane.yaw = data.yaw;
-  aiPlane.mesh.position.copy(aiPlane.pos);
-  aiPlane.mesh.rotation.y = aiPlane.yaw;
-  aiPlane.quat.setFromEuler(new THREE.Euler(0, aiPlane.yaw, 0));
-}
-
-// Применяем повреждение здания с сети
-function updateRemoteBuilding(data) {
-  const b = buildings.find(b => Math.abs(b.x - data.x) < 0.5 && Math.abs(b.z - data.z) < 0.5);
-  if (!b || b.destroyed) return;
-  b.hp = data.hp;
-  if (b.hp <= 0) {
-    destroyBuilding(b, new THREE.Vector3(data.x, 0, data.z), true);
-  }
-}
-
-// ===== ОСНОВНАЯ ИГРА =====
+// ===== ОСНОВНАЯ ИГРА (без изменений) =====
 const AIRCRAFT = {
-  su34:{name:'СУ-34',maxSpeed:220,minSpeed:45,accel:55,turnPitch:0.9,turnRoll:1.5,turnYaw:0.7,hp:100,maxBombs:8,color:0x4a5a4a,dark:0x22331a,size:1,bankTurn:0.9},
-  su35:{name:'СУ-35С',maxSpeed:320,minSpeed:60,accel:85,turnPitch:1.1,turnRoll:1.9,turnYaw:0.85,hp:80,maxBombs:6,color:0x5a6a7a,dark:0x2a3340,size:.95,bankTurn:1.2},
-  su25:{name:'СУ-25',maxSpeed:140,minSpeed:30,accel:35,turnPitch:0.8,turnRoll:1.3,turnYaw:0.6,hp:140,maxBombs:12,color:0x4a4a3a,dark:0x2a2a1a,size:1.1,bankTurn:0.8}
+su34:{name:'СУ-34',maxSpeed:220,minSpeed:45,accel:55,turnPitch:0.9,turnRoll:1.5,turnYaw:0.7,hp:100,maxBombs:8,color:0x4a5a4a,dark:0x22331a,size:1,bankTurn:0.9},
+su35:{name:'СУ-35С',maxSpeed:320,minSpeed:60,accel:85,turnPitch:1.1,turnRoll:1.9,turnYaw:0.85,hp:80,maxBombs:6,color:0x5a6a7a,dark:0x2a3340,size:.95,bankTurn:1.2},
+su25:{name:'СУ-25',maxSpeed:140,minSpeed:30,accel:35,turnPitch:0.8,turnRoll:1.3,turnYaw:0.6,hp:140,maxBombs:12,color:0x4a4a3a,dark:0x2a2a1a,size:1.1,bankTurn:0.8}
 };
 const scene = new THREE.Scene();
 const W = innerWidth, H = innerHeight;
@@ -320,8 +406,6 @@ const renderer = new THREE.WebGLRenderer({antialias:false, powerPreference:'high
 renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
 renderer.setSize(W, H);
 document.body.appendChild(renderer.domElement);
-
-// Небо
 const skyCanvas = document.createElement('canvas');
 skyCanvas.width = 8; skyCanvas.height = 256;
 const skyCtx = skyCanvas.getContext('2d');
@@ -333,35 +417,19 @@ scene.add(skyMesh);
 scene.add(new THREE.HemisphereLight(0xffffff, 0x556644, 1.4));
 const sun = new THREE.DirectionalLight(0xffffff, 1.3);
 sun.position.set(80, 200, 60); scene.add(sun);
-
-// Земля
 const grCanvas = document.createElement('canvas');
 grCanvas.width = 256; grCanvas.height = 256;
 const grCtx = grCanvas.getContext('2d');
 grCtx.fillStyle = '#5a6b3f'; grCtx.fillRect(0, 0, 256, 256);
-for (let i = 0; i < 800; i++) {
-  const v = rnd();
-  grCtx.fillStyle = `rgba(${40+v*40},${70+v*40},${30+v*30},${0.2+rnd()*0.3})`;
-  grCtx.beginPath(); grCtx.arc(rnd()*256, rnd()*256, 2+rnd()*6, 0, Math.PI*2); grCtx.fill();
-}
+for (let i = 0; i < 800; i++) { const v = rnd(); grCtx.fillStyle = `rgba(${40+v*40},${70+v*40},${30+v*30},${0.2+rnd()*0.3})`; grCtx.beginPath(); grCtx.arc(rnd()*256, rnd()*256, 2+rnd()*6, 0, Math.PI*2); grCtx.fill(); }
 const grTex = new THREE.CanvasTexture(grCanvas);
 grTex.wrapS = grTex.wrapT = THREE.RepeatWrapping; grTex.repeat.set(60, 60);
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(6000, 6000, 1, 1), new THREE.MeshLambertMaterial({map: grTex}));
 ground.rotation.x = -Math.PI/2; scene.add(ground);
-
-// Аэродром
 const airfield = {x: -1200, z: -1200, w: 60, len: 240};
-const runway = new THREE.Mesh(
-  new THREE.BoxGeometry(airfield.w, 0.2, airfield.len),
-  new THREE.MeshLambertMaterial({color: 0x2a2a2a})
-);
+const runway = new THREE.Mesh(new THREE.BoxGeometry(airfield.w, 0.2, airfield.len), new THREE.MeshLambertMaterial({color: 0x2a2a2a}));
 runway.position.set(airfield.x, 0.1, airfield.z); scene.add(runway);
-for (let i = -10; i <= 10; i++) {
-  const s = new THREE.Mesh(new THREE.BoxGeometry(2, 0.25, 8), new THREE.MeshBasicMaterial({color: 0xeeeeee}));
-  s.position.set(airfield.x, 0.2, airfield.z + i * 11); scene.add(s);
-}
-
-// Город
+for (let i = -10; i <= 10; i++) { const s = new THREE.Mesh(new THREE.BoxGeometry(2, 0.25, 8), new THREE.MeshBasicMaterial({color: 0xeeeeee})); s.position.set(airfield.x, 0.2, airfield.z + i * 11); scene.add(s); }
 const buildings = [], fragments = [], decor = [];
 const wallMat = new THREE.MeshLambertMaterial({color: 0xa89880});
 const floorMat = new THREE.MeshLambertMaterial({color: 0x6a5a4a});
@@ -370,7 +438,6 @@ const WIN_LIT = new THREE.MeshLambertMaterial({color: 0xffdd77, emissive: 0x5533
 const WIN_OFF = new THREE.MeshLambertMaterial({color: 0x334455});
 const WIN_GEO_S = new THREE.BoxGeometry(1.4, 1.6, 0.15);
 const WIN_GEO_E = new THREE.BoxGeometry(0.15, 1.6, 1.4);
-
 function createHouse(x, z) {
   const g = new THREE.Group();
   const floors = 2 + Math.floor(rnd()*3);
@@ -441,13 +508,9 @@ function createHouse(x, z) {
   buildings.push({group: g, x, z, w, h: totalH, d, hp, maxHp: hp, destroyed: false, wallMeshes, windowMeshes, floorMeshes, floorH, floors});
 }
 function buildCity(cx, cz, count, radius) {
-  for (let i = 0; i < count; i++) {
-    const a = rnd()*Math.PI*2, r = rnd()*radius;
-    createHouse(cx+Math.cos(a)*r, cz+Math.sin(a)*r);
-  }
+  for (let i = 0; i < count; i++) { const a = rnd()*Math.PI*2, r = rnd()*radius; createHouse(cx+Math.cos(a)*r, cz+Math.sin(a)*r); }
 }
 buildCity(-220,-220,8,110); buildCity(220,220,8,110); buildCity(-220,220,7,100); buildCity(250,-150,7,100); buildCity(0,0,5,80);
-
 function createTree(x, z) {
   const g = new THREE.Group();
   const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.4, 3, 8), new THREE.MeshLambertMaterial({color: 0x5a3a1a}));
@@ -467,10 +530,7 @@ function createLamp(x, z) {
 const CAR_COLORS = [0xaa2020, 0x2244aa, 0xd0d0d0, 0x222222, 0xdddd44];
 function createCar(x, z, yaw) {
   const g = new THREE.Group();
-  const body = new THREE.Mesh(
-    new THREE.BoxGeometry(4, 1.2, 1.8),
-    new THREE.MeshLambertMaterial({color: CAR_COLORS[Math.floor(rnd()*CAR_COLORS.length)]})
-  );
+  const body = new THREE.Mesh(new THREE.BoxGeometry(4, 1.2, 1.8), new THREE.MeshLambertMaterial({color: CAR_COLORS[Math.floor(rnd()*CAR_COLORS.length)]}));
   body.position.y = 0.9; g.add(body);
   g.position.set(x, 0, z); g.rotation.y = yaw; scene.add(g);
   decor.push({x, z, r: 1.8, obj: g, destroyed: false});
@@ -481,7 +541,6 @@ for (const [cx, cz] of cityCenters) {
   for (let i = 0; i < 8; i++) { const a = rnd()*Math.PI*2, r = 30 + rnd()*130; createLamp(cx+Math.cos(a)*r, cz+Math.sin(a)*r); }
   for (let i = 0; i < 5; i++) { const a = rnd()*Math.PI*2, r = 30 + rnd()*130; createCar(cx+Math.cos(a)*r, cz+Math.sin(a)*r, rnd()*Math.PI*2); }
 }
-
 function collideWithWalls(nx, nz, py, pr) {
   if (py > 3.5) return [nx, nz];
   for (const b of buildings) {
@@ -514,8 +573,6 @@ function damageDecorations(pos, buildR) {
     }
   }
 }
-
-// ПВО
 const aaGuns = [];
 function createAA(x, z) {
   const g = new THREE.Group();
@@ -527,17 +584,11 @@ function createAA(x, z) {
   aaGuns.push({group: g, turret, x, z, alive: true, lastShot: 0, range: 350, fireRate: 0.8, lockProgress: 0});
 }
 for (let i = 0; i < 8; i++) createAA((rnd()-.5)*1400, (rnd()-.5)*1400);
-
 function addCrater(pos, scale) {
   scale = scale || 1;
-  const crater = new THREE.Mesh(
-    new THREE.CircleGeometry(6 * scale, 24),
-    new THREE.MeshBasicMaterial({color: 0x1a1208, transparent: true, opacity: 0.95})
-  );
+  const crater = new THREE.Mesh(new THREE.CircleGeometry(6 * scale, 24), new THREE.MeshBasicMaterial({color: 0x1a1208, transparent: true, opacity: 0.95}));
   crater.rotation.x = -Math.PI/2; crater.position.set(pos.x, 0.05, pos.z); scene.add(crater);
 }
-
-// Самолёты
 let planeMesh = new THREE.Group();
 scene.add(planeMesh);
 let planeConfig = AIRCRAFT.su34;
@@ -584,7 +635,6 @@ function createBombMesh(type) {
   nose.rotation.x = -Math.PI/2; nose.position.z = -l/2-.45; g.add(nose);
   return g;
 }
-
 let plane = null, aiPlane = null;
 const bombs = [], explosions = [], aaShells = [], contrails = [];
 let bombCount = 0, hits = 0, lastBomb = null, viewMode = 0, throttleInput = 0, currentBombType = 'fab';
@@ -595,13 +645,11 @@ const groundPlayer = {pos: new THREE.Vector3(0, 1.7, 0), yaw: 0, pitch: 0, speed
 const smoothMove = {x: 0, y: 0}, smoothLook = {x: 0, y: 0};
 const rearm = {active: false, timer: 0, cooldown: 0};
 const REARM_TIME = 4, REARM_CD = 15;
-
 const stickL = document.getElementById('stickL'), knobL = document.getElementById('knobL');
 const stickR = document.getElementById('stickR'), knobR = document.getElementById('knobR');
 const touchState = {L: null, R: null};
 const moveVec = {x: 0, y: 0}, lookVec = {x: 0, y: 0};
 const STICK_R = 70, KNOB_R = 27, DEAD = 10;
-
 function isUI(t) { return t.closest && (t.closest('.btn') || t.closest('.bombSel') || t.closest('#msg') || t.closest('#onlineMenu')); }
 function placeStick(s, k, cx, cy) {
   s.style.left = (cx-STICK_R)+'px'; s.style.top = (cy-STICK_R)+'px'; s.style.display = 'block';
@@ -609,7 +657,6 @@ function placeStick(s, k, cx, cy) {
 }
 function moveKnob(k, cx, cy, dx, dy) { k.style.left = (cx+dx-KNOB_R)+'px'; k.style.top = (cy+dy-KNOB_R)+'px'; }
 function hideStick(s, k) { s.style.display = 'none'; k.style.display = 'none'; }
-
 function onStart(e) {
   if (isUI(e.target)) return;
   for (const t of e.changedTouches) {
@@ -651,27 +698,16 @@ document.addEventListener('touchstart', onStart, {passive: false});
 document.addEventListener('touchmove', onMove, {passive: false});
 document.addEventListener('touchend', onEnd, {passive: false});
 document.addEventListener('touchcancel', onEnd, {passive: false});
-
-// Универсальная привязка кнопок (мышь + тач через Pointer Events)
 function bindBtn(id, on, off) {
   const el = document.getElementById(id);
   if (!el) return;
   let captured = false;
-  const down = e => {
-    e.preventDefault(); e.stopPropagation();
-    try { el.setPointerCapture(e.pointerId); captured = true; } catch(_) {}
-    on && on();
-  };
-  const up = e => {
-    e.preventDefault(); e.stopPropagation();
-    if (captured) { try { el.releasePointerCapture(e.pointerId); } catch(_) {} captured = false; }
-    off && off();
-  };
+  const down = e => { e.preventDefault(); e.stopPropagation(); try { el.setPointerCapture(e.pointerId); captured = true; } catch(_) {} on && on(); };
+  const up = e => { e.preventDefault(); e.stopPropagation(); if (captured) { try { el.releasePointerCapture(e.pointerId); } catch(_) {} captured = false; } off && off(); };
   el.addEventListener('pointerdown', down);
   el.addEventListener('pointerup', up);
   el.addEventListener('pointercancel', up);
 }
-
 bindBtn('bombBtn', () => dropBomb());
 bindBtn('thrUp', () => throttleInput = 1, () => throttleInput = 0);
 bindBtn('thrDn', () => throttleInput = -1, () => throttleInput = 0);
@@ -680,7 +716,6 @@ bindBtn('flareBtn', () => dropFlare());
 bindBtn('rearmBtn', () => startRearm());
 bindBtn('exitBtn', () => toggleExit());
 bindBtn('brakeBtn', () => braking = true, () => braking = false);
-
 document.querySelectorAll('.bombSel .bs').forEach(el => {
   el.addEventListener('click', e => {
     e.preventDefault(); e.stopPropagation();
@@ -689,10 +724,8 @@ document.querySelectorAll('.bombSel .bs').forEach(el => {
     currentBombType = el.dataset.type;
   });
 });
-
 function hideElement(id) { const el = document.getElementById(id); if (el) el.style.display = 'none'; }
 function showElement(id, disp) { const el = document.getElementById(id); if (el) el.style.display = disp || 'flex'; }
-
 function showPlaneMenu() {
   document.getElementById('msg').innerHTML = '<h3>ВЫБЕРИ САМОЛЁТ</h3>' +
     '<button class="plane-opt" data-plane="su34"><b>СУ-34</b><small>8 бомб · средняя · 100 HP</small></button>' +
@@ -700,13 +733,9 @@ function showPlaneMenu() {
     '<button class="plane-opt" data-plane="su25"><b>СУ-25</b><small>12 бомб · низкая · 140 HP</small></button>';
   document.getElementById('msg').style.display = 'block';
   document.querySelectorAll('.plane-opt').forEach(el => {
-    el.addEventListener('click', e => {
-      e.preventDefault(); e.stopPropagation();
-      startGame(el.dataset.plane);
-    });
+    el.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); startGame(el.dataset.plane); });
   });
 }
-
 function toggleExit() {
   if (mode === 'plane') {
     if (plane.pos.y > 5 || plane.speed > 20) return;
@@ -727,7 +756,6 @@ function toggleExit() {
     document.getElementById('exitBtn').innerHTML = 'ВЫЙТИ';
   }
 }
-
 function startRearm() {
   if (rearm.active || rearm.cooldown > 0 || gameOver || !started || mode !== 'plane') return;
   if (bombCount >= planeConfig.maxBombs) return;
@@ -747,7 +775,6 @@ function updateRearm(dt) {
   }
   if (rearm.cooldown > 0) { rearm.cooldown -= dt; }
 }
-
 function startGame(planeType) {
   if (started) return;
   started = true;
@@ -757,17 +784,13 @@ function startGame(planeType) {
   bombCount = planeConfig.maxBombs;
   const bp = buildPlane(planeConfig);
   scene.remove(planeMesh); scene.add(bp); planeMesh = bp;
-  plane = {
-    pos: new THREE.Vector3(airfield.x, 3, airfield.z + airfield.len/2 - 20),
-    quat: new THREE.Quaternion(), speed: 0, config: planeConfig, onGround: true
-  };
+  plane = { pos: new THREE.Vector3(airfield.x, 3, airfield.z + airfield.len/2 - 20), quat: new THREE.Quaternion(), speed: 0, config: planeConfig, onGround: true };
   document.getElementById('planeName').textContent = planeConfig.name;
   document.getElementById('maxBombs').textContent = planeConfig.maxBombs;
   document.getElementById('msg').style.display = 'none';
   initAudio(); updateHUD();
   if (net.role === 'host') spawnAIPlane();
 }
-
 function startCivilian() {
   if (started) return;
   started = true;
@@ -786,7 +809,6 @@ function startCivilian() {
   initAudio();
   if (net.role === 'host') setTimeout(() => spawnAIPlane(), 5000);
 }
-
 function spawnAIPlane() {
   if (aiPlane) return;
   const aiMesh = buildPlane(AIRCRAFT.su34, 0x5a3a3a);
@@ -796,14 +818,8 @@ function spawnAIPlane() {
   const aiYaw = Math.atan2(dirToCity.x, dirToCity.z);
   aiMesh.rotation.y = aiYaw;
   scene.add(aiMesh);
-  aiPlane = {
-    mesh: aiMesh, pos: aiStart.clone(),
-    quat: new THREE.Quaternion().setFromEuler(new THREE.Euler(0, aiYaw, 0)),
-    yaw: aiYaw, speed: 0, altitude: 3, state: 'takeoff', stateTimer: 0,
-    attackTimer: 0, bombsLeft: 8, nextBombTimer: 0.5, isEvading: false, evadeTimer: 0
-  };
+  aiPlane = { mesh: aiMesh, pos: aiStart.clone(), quat: new THREE.Quaternion().setFromEuler(new THREE.Euler(0, aiYaw, 0)), yaw: aiYaw, speed: 0, altitude: 3, state: 'takeoff', stateTimer: 0, attackTimer: 0, bombsLeft: 8, nextBombTimer: 0.5, isEvading: false, evadeTimer: 0 };
 }
-
 function updateAIPlane(dt) {
   if (!aiPlane) return;
   const ai = aiPlane;
@@ -817,11 +833,8 @@ function updateAIPlane(dt) {
     ai.speed = Math.min(220, ai.speed + 15 * dt);
     ai.altitude = 450;
     if (ai.bombsLeft <= 0 || ai.attackTimer > 300) { ai.state = 'return'; ai.stateTimer = 0; return; }
-    if (ai.isEvading) {
-      ai.evadeTimer -= dt;
-      ai.yaw += Math.sin(ai.stateTimer * 6) * 3 * dt;
-      if (ai.evadeTimer <= 0) ai.isEvading = false;
-    } else {
+    if (ai.isEvading) { ai.evadeTimer -= dt; ai.yaw += Math.sin(ai.stateTimer * 6) * 3 * dt; if (ai.evadeTimer <= 0) ai.isEvading = false; }
+    else {
       const ty = Math.atan2(-ai.pos.x, -ai.pos.z);
       let diff = ty - ai.yaw;
       while (diff > Math.PI) diff -= Math.PI*2;
@@ -874,10 +887,7 @@ function updateAIPlane(dt) {
     if (ai.speed < 5 && ai.altitude < 5) { ai.state = 'ground'; ai.stateTimer = 0; ai.altitude = 3; ai.speed = 0; }
   } else if (ai.state === 'ground') {
     ai.stateTimer += dt;
-    if (ai.stateTimer > 30) {
-      ai.bombsLeft = 8; ai.state = 'takeoff'; ai.speed = 0; ai.altitude = 3;
-      ai.stateTimer = 0; ai.attackTimer = 0; ai.nextBombTimer = 0.5;
-    }
+    if (ai.stateTimer > 30) { ai.bombsLeft = 8; ai.state = 'takeoff'; ai.speed = 0; ai.altitude = 3; ai.stateTimer = 0; ai.attackTimer = 0; ai.nextBombTimer = 0.5; }
   }
   const fwdV = new THREE.Vector3(0,0,-1).applyQuaternion(ai.quat);
   if (ai.state !== 'ground') ai.pos.addScaledVector(fwdV, ai.speed * dt);
@@ -888,7 +898,6 @@ function updateAIPlane(dt) {
   ai.quat.setFromEuler(ce); ai.mesh.quaternion.copy(ai.quat);
   if (net.sendAI) { try { net.sendAI({x: ai.pos.x, y: ai.pos.y, z: ai.pos.z, yaw: ai.yaw}); } catch(e) {} }
 }
-
 let audioCtx = null;
 function initAudio() { try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {} }
 function playBoom(intensity = 1) {
@@ -903,7 +912,6 @@ function playBoom(intensity = 1) {
   const ng = audioCtx.createGain(); ng.gain.value = 0.8 * intensity;
   noise.connect(filter); filter.connect(ng); ng.connect(audioCtx.destination); noise.start(now);
 }
-
 function updateContrails(dt) {
   for (let i = contrails.length - 1; i >= 0; i--) {
     const c = contrails[i]; c.life += dt;
@@ -912,7 +920,6 @@ function updateContrails(dt) {
     if (c.life >= c.maxLife) { scene.remove(c.mesh); contrails.splice(i, 1); }
   }
 }
-
 function dropBomb() {
   if (!started || gameOver || bombCount <= 0 || mode !== 'plane' || role !== 'pilot') return;
   bombCount--;
@@ -928,40 +935,23 @@ function dropBomb() {
 function spawnBombFromData(d) {
   const mesh = createBombMesh(d.btype);
   scene.add(mesh);
-  const bomb = {
-    mesh, type: d.btype, bid: d.bid,
-    pos: new THREE.Vector3(d.x, d.y, d.z),
-    vel: new THREE.Vector3(d.vx, d.vy, d.vz),
-    exploded: false, life: 0, impactPos: null, isAI: false, owner: d.owner || 'net'
-  };
+  const bomb = { mesh, type: d.btype, bid: d.bid, pos: new THREE.Vector3(d.x, d.y, d.z), vel: new THREE.Vector3(d.vx, d.vy, d.vz), exploded: false, life: 0, impactPos: null, isAI: false, owner: d.owner || 'net' };
   bombs.push(bomb);
   if (!lastBomb) lastBomb = bomb;
 }
 function dropFlare() {}
-
 function explode(posIn, type) {
   let pos = posIn;
   if (role === 'civilian' && mode === 'ground') {
     const d = Math.hypot(pos.x - groundPlayer.pos.x, pos.z - groundPlayer.pos.z);
-    if (d < 15) {
-      const a = Math.atan2(groundPlayer.pos.z - pos.z, groundPlayer.pos.x - pos.x);
-      pos = new THREE.Vector3(pos.x + Math.cos(a)*10, pos.y, pos.z + Math.sin(a)*10);
-    }
+    if (d < 15) { const a = Math.atan2(groundPlayer.pos.z - pos.z, groundPlayer.pos.x - pos.x); pos = new THREE.Vector3(pos.x + Math.cos(a)*10, pos.y, pos.z + Math.sin(a)*10); }
   }
   const intensity = type === 'inc' ? 1.0 : (type === 'cluster' ? 1.5 : 1.3);
   playBoom(intensity);
   addCrater(pos, type === 'cluster' ? 1.8 : 1.6);
   bigExplosion(pos, type, 1.5);
-
-  // Только хост считает урон. Гость получит готовые результаты через сеть.
   if (net.role !== 'host' && net.role !== 'offline') return;
-
-  for (const aa of aaGuns) {
-    if (aa.alive && Math.hypot(pos.x-aa.x, pos.z-aa.z) < 15) {
-      aa.alive = false; aa.group.visible = false;
-      hits++; updateHUD();
-    }
-  }
+  for (const aa of aaGuns) { if (aa.alive && Math.hypot(pos.x-aa.x, pos.z-aa.z) < 15) { aa.alive = false; aa.group.visible = false; hits++; updateHUD(); } }
   const buildR = 50;
   const baseDmg = type === 'cluster' ? 800 : (type === 'kab' ? 1400 : (type === 'inc' ? 1100 : 1200));
   for (const b of buildings) {
@@ -969,15 +959,10 @@ function explode(posIn, type) {
     const d = Math.hypot(pos.x-b.x, pos.z-b.z);
     const isDirect = Math.abs(pos.x-b.x) < b.w/2 && Math.abs(pos.z-b.z) < b.d/2;
     if (isDirect) { b.hp = 0; destroyBuilding(b, pos); continue; }
-    if (d < buildR) {
-      const falloff = 1 - d/buildR;
-      b.hp -= baseDmg * falloff * intensity;
-      if (b.hp <= 0) destroyBuilding(b, pos);
-    }
+    if (d < buildR) { const falloff = 1 - d/buildR; b.hp -= baseDmg * falloff * intensity; if (b.hp <= 0) destroyBuilding(b, pos); }
   }
   damageDecorations(pos, buildR);
 }
-
 function bigExplosion(pos, type, scale) {
   scale = scale || 1;
   const flash = new THREE.Mesh(new THREE.SphereGeometry(8*scale,14,14), new THREE.MeshBasicMaterial({color: 0xffffff, transparent: true, opacity: 1}));
@@ -1000,7 +985,6 @@ function bigExplosion(pos, type, scale) {
     explosions.push({mesh: d, kind: 'debris', life: 0, maxLife: 2.5, vel: new THREE.Vector3((Math.random()-.5)*45, Math.random()*35+8, (Math.random()-.5)*45)});
   }
 }
-
 function destroyBuilding(b, impactPos, fromRemote) {
   if (b.destroyed) return;
   b.destroyed = true;
@@ -1019,12 +1003,8 @@ function destroyBuilding(b, impactPos, fromRemote) {
     explosions.push({mesh: dust, kind: 'smoke', life: 0, maxLife: 6, vel: new THREE.Vector3((Math.random()-.5)*12, Math.random()*10+1, (Math.random()-.5)*12)});
   }
   hits++; updateHUD();
-  // Только хост рассылает событие
-  if (!fromRemote && net.role === 'host' && net.sendBuilding) {
-    try { net.sendBuilding({x: b.x, z: b.z, hp: 0}); } catch(e) {}
-  }
+  if (!fromRemote && net.role === 'host' && net.sendBuilding) { try { net.sendBuilding({x: b.x, z: b.z, hp: 0}); } catch(e) {} }
 }
-
 function updateFragments(dt) {
   for (let i = fragments.length-1; i >= 0; i--) {
     const f = fragments[i]; f.life += dt;
@@ -1054,49 +1034,25 @@ function updateBombs(dt) {
     b.vel.y -= 32*dt;
     b.pos.addScaledVector(b.vel, dt);
     b.mesh.position.copy(b.pos);
-    if (b.vel.lengthSq() > 0.01) {
-      const dir = b.vel.clone().normalize();
-      b.mesh.quaternion.copy(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,-1,0), dir));
-    }
+    if (b.vel.lengthSq() > 0.01) { const dir = b.vel.clone().normalize(); b.mesh.quaternion.copy(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,-1,0), dir)); }
     let hitB = null;
-    for (const bld of buildings) {
-      if (bld.destroyed) continue;
-      if (Math.abs(b.pos.x-bld.x) < bld.w/2 + 0.5 && Math.abs(b.pos.z-bld.z) < bld.d/2 + 0.5 && b.pos.y < bld.h + 0.5) { hitB = bld; break; }
-    }
-    if (b.pos.y <= 0 || hitB) {
-      b.impactPos = b.pos.clone(); if (b.impactPos.y < 0) b.impactPos.y = 0;
-      explode(b.impactPos, b.type);
-      b.exploded = true; b.life = 0; b.mesh.visible = false;
-      if (b === lastBomb) lastBomb = null;
-    }
+    for (const bld of buildings) { if (bld.destroyed) continue; if (Math.abs(b.pos.x-bld.x) < bld.w/2 + 0.5 && Math.abs(b.pos.z-bld.z) < bld.d/2 + 0.5 && b.pos.y < bld.h + 0.5) { hitB = bld; break; } }
+    if (b.pos.y <= 0 || hitB) { b.impactPos = b.pos.clone(); if (b.impactPos.y < 0) b.impactPos.y = 0; explode(b.impactPos, b.type); b.exploded = true; b.life = 0; b.mesh.visible = false; if (b === lastBomb) lastBomb = null; }
   }
 }
-
 function updateAA(dt) {
   for (const aa of aaGuns) {
     if (!aa.alive) continue;
     let bt = null, bd = Infinity;
-    if (plane && mode === 'plane' && role === 'pilot') {
-      const d = Math.hypot(plane.pos.x-aa.x, plane.pos.z-aa.z);
-      if (d < aa.range && d < bd) { bd = d; bt = {pos: plane.pos}; }
-    }
-    if (aiPlane && aiPlane.state !== 'ground') {
-      const d = Math.hypot(aiPlane.pos.x-aa.x, aiPlane.pos.z-aa.z);
-      if (d < aa.range && d < bd) { bd = d; bt = {pos: aiPlane.pos}; }
-    }
+    if (plane && mode === 'plane' && role === 'pilot') { const d = Math.hypot(plane.pos.x-aa.x, plane.pos.z-aa.z); if (d < aa.range && d < bd) { bd = d; bt = {pos: plane.pos}; } }
+    if (aiPlane && aiPlane.state !== 'ground') { const d = Math.hypot(aiPlane.pos.x-aa.x, aiPlane.pos.z-aa.z); if (d < aa.range && d < bd) { bd = d; bt = {pos: aiPlane.pos}; } }
     if (!bt) { aa.lockProgress = Math.max(0, aa.lockProgress-dt*.5); continue; }
     const dx = bt.pos.x-aa.x, dz = bt.pos.z-aa.z;
     aa.turret.rotation.y = Math.atan2(dx, dz);
     aa.lockProgress += dt*.5;
     if (aa.lockProgress > 1) {
       aa.lastShot += dt;
-      if (aa.lastShot > aa.fireRate) {
-        aa.lastShot = 0;
-        const s = new THREE.Mesh(new THREE.SphereGeometry(.4,6,6), new THREE.MeshBasicMaterial({color: 0xffaa00}));
-        s.position.set(aa.x, 3, aa.z); scene.add(s);
-        const dir = new THREE.Vector3(bt.pos.x-aa.x, bt.pos.y-3, bt.pos.z-aa.z).normalize();
-        aaShells.push({mesh: s, pos: s.position.clone(), vel: dir.multiplyScalar(320), life: 0});
-      }
+      if (aa.lastShot > aa.fireRate) { aa.lastShot = 0; const s = new THREE.Mesh(new THREE.SphereGeometry(.4,6,6), new THREE.MeshBasicMaterial({color: 0xffaa00})); s.position.set(aa.x, 3, aa.z); scene.add(s); const dir = new THREE.Vector3(bt.pos.x-aa.x, bt.pos.y-3, bt.pos.z-aa.z).normalize(); aaShells.push({mesh: s, pos: s.position.clone(), vel: dir.multiplyScalar(320), life: 0}); }
     }
   }
 }
@@ -1114,36 +1070,29 @@ function updateAAShells(dt) {
     if (s.pos.y < 0 || s.life > 4) { scene.remove(s.mesh); aaShells.splice(i,1); }
   }
 }
-
 function updatePlane(dt) {
   if (!plane || gameOver) return;
   const cfg = plane.config;
   const onRunway = Math.abs(plane.pos.x - airfield.x) < airfield.w/2 + 10 && Math.abs(plane.pos.z - airfield.z) < airfield.len/2 + 20;
-
   if (braking && plane.onGround) plane.speed = Math.max(0, plane.speed - 40 * dt);
   else if (throttleInput !== 0) plane.speed += throttleInput*cfg.accel*dt;
   else if (plane.onGround) plane.speed = Math.max(0, plane.speed - 5 * dt);
   plane.speed = Math.max(0, Math.min(cfg.maxSpeed, plane.speed));
-
   const sk = Math.min(1, dt * 5);
   smoothMove.x += (moveVec.x - smoothMove.x) * sk;
   smoothMove.y += (moveVec.y - smoothMove.y) * sk;
   smoothLook.x += (lookVec.x - smoothLook.x) * sk;
   smoothLook.y += (lookVec.y - smoothLook.y) * sk;
-
   const cf = Math.min(1, plane.speed / (cfg.minSpeed * 0.8));
   const q = new THREE.Quaternion();
   q.setFromEuler(new THREE.Euler(-smoothMove.y*cfg.turnPitch*cf*dt, -smoothLook.x*cfg.turnYaw*cf*dt, -smoothMove.x*cfg.turnRoll*cf*dt, 'XYZ'));
   plane.quat.multiply(q);
-
   const e = new THREE.Euler().setFromQuaternion(plane.quat, 'YXZ');
   if (!plane.onGround) e.y += e.z * cfg.bankTurn * dt;
   e.z *= (1 - 2.5 * dt);
   plane.quat.setFromEuler(e); plane.quat.normalize();
-
   const fwd = new THREE.Vector3(0,0,-1).applyQuaternion(plane.quat);
   plane.pos.addScaledVector(fwd, plane.speed*dt);
-
   const minAlt = onRunway ? 1.6 : 8;
   plane.onGround = plane.pos.y <= minAlt + 0.6;
   if (plane.pos.y < minAlt) {
@@ -1153,10 +1102,8 @@ function updatePlane(dt) {
     e2.x = Math.min(e2.x, 0);
     plane.quat.setFromEuler(e2);
   }
-
   planeMesh.position.copy(plane.pos); planeMesh.quaternion.copy(plane.quat);
   skyMesh.position.copy(plane.pos);
-
   if (onRunway && plane.onGround && plane.speed < 40) {
     document.getElementById('exitBtn').style.display = 'flex';
     document.getElementById('brakeBtn').style.display = 'flex';
@@ -1164,26 +1111,13 @@ function updatePlane(dt) {
     document.getElementById('exitBtn').style.display = 'none';
     document.getElementById('brakeBtn').style.display = 'none';
   }
-
   const hint = document.getElementById('landHint');
   if (!plane.onGround && plane.speed < 90 && plane.pos.y < 150 && !onRunway) hint.style.display = 'block';
   else hint.style.display = 'none';
-
-  if (viewMode === 0) {
-    const off = new THREE.Vector3(0,7,28).applyQuaternion(plane.quat);
-    camera.position.lerp(plane.pos.clone().add(off), .12);
-    camera.lookAt(plane.pos.clone().addScaledVector(fwd, 30));
-  } else if (viewMode === 1) {
-    const off = new THREE.Vector3(0,1.2,-5).applyQuaternion(plane.quat);
-    camera.position.copy(plane.pos.clone().add(off));
-    camera.lookAt(plane.pos.clone().addScaledVector(fwd, 100));
-  } else {
-    const t = performance.now()*.0003;
-    camera.position.lerp(plane.pos.clone().add(new THREE.Vector3(Math.cos(t)*40, 20, Math.sin(t)*40)), .08);
-    camera.lookAt(plane.pos);
-  }
+  if (viewMode === 0) { const off = new THREE.Vector3(0,7,28).applyQuaternion(plane.quat); camera.position.lerp(plane.pos.clone().add(off), .12); camera.lookAt(plane.pos.clone().addScaledVector(fwd, 30)); }
+  else if (viewMode === 1) { const off = new THREE.Vector3(0,1.2,-5).applyQuaternion(plane.quat); camera.position.copy(plane.pos.clone().add(off)); camera.lookAt(plane.pos.clone().addScaledVector(fwd, 100)); }
+  else { const t = performance.now()*.0003; camera.position.lerp(plane.pos.clone().add(new THREE.Vector3(Math.cos(t)*40, 20, Math.sin(t)*40)), .08); camera.lookAt(plane.pos); }
 }
-
 function updateGround(dt) {
   const sk = Math.min(1, dt * 6);
   smoothMove.x += (moveVec.x - smoothMove.x) * sk;
@@ -1207,7 +1141,6 @@ function updateGround(dt) {
   camera.rotation.x = groundPlayer.pitch;
   camera.rotation.z = 0;
 }
-
 function updateHUD() {
   if (role === 'civilian') return;
   if (!plane) return;
@@ -1218,23 +1151,17 @@ function updateHUD() {
   const p = Math.max(0, playerHP/playerMaxHP*100);
   document.getElementById('hpFill').style.width = p+'%';
 }
-
 function checkDeath() {
   if (gameOver) return;
   if (role !== 'pilot') return;
   if (playerHP > 0) return;
   playerHP = 0; gameOver = true; started = false;
-  if (plane) {
-    bigExplosion(plane.pos.clone(), 'fab', 2.5);
-    playBoom(2.0);
-    planeMesh.visible = false;
-  }
+  if (plane) { bigExplosion(plane.pos.clone(), 'fab', 2.5); playBoom(2.0); planeMesh.visible = false; }
   const msg = document.getElementById('msg');
   msg.innerHTML = '<h3>✖ САМОЛЁТ СБИТ</h3><div style="color:#fff;font-size:13px;margin:8px 0">Нажми, чтобы начать заново</div>';
   msg.style.display = 'block';
   msg.onclick = () => location.reload();
 }
-
 const clock = new THREE.Clock();
 function animate() {
   requestAnimationFrame(animate);
